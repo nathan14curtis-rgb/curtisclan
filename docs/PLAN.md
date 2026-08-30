@@ -433,17 +433,14 @@ budgeting works when caps don't.
 - **Moving money** — first-class operation with an audit trail. Overspent Dining? Move $40
   from Entertainment. Two `allocation` rows, fully reversible.
 
-### 8.2 Overspending policy — decide this before you build
+### 8.2 Overspending policy — DECIDED: carry forward
 
-An envelope can go negative, and you need a rule **[OPEN]**:
+An envelope that goes negative **carries the negative into next month**. Overspend $40 on
+Groceries in March and April's Groceries starts at −$40. You either fund it back to zero or
+move money from another envelope, deliberately.
 
-- **Carry the negative forward** — next month's Groceries starts at −$40. Honest, and it
-  makes the consequence visible.
-- **Absorb from Ready to Assign** — the overspend eats unallocated cash, envelope resets to
-  zero. Gentler, and closer to how most people actually think.
-
-I'd start with **carry forward**, since hiding the overspend defeats the point of choosing
-envelopes over caps. But it's a household preference, not a technical one.
+The consequence stays visible instead of being quietly absorbed by unallocated cash, which
+is the entire reason to choose envelopes over caps.
 
 ### 8.3 Credit cards are the hard part
 
@@ -468,13 +465,45 @@ balances all have edge cases.
 | Works if you carry a balance | Misleading | Correct |
 | Build cost | Low | Meaningfully higher |
 
-**Recommendation [ASSUMED]:** start simplified, since it's correct as long as you pay
-Discover and Amex in full each month. **Do you?** If you carry a balance, the simplified
-model will overstate what you have available and you want the payment-envelope design from
-the start — it's not a clean thing to retrofit.
+**DECIDED: simplified model.** You pay Discover and Amex in full every month, which is
+exactly the condition that makes it correct. Card spending draws its envelope down
+immediately; no per-card payment envelopes.
 
-Either way, the **card payment itself is a transfer**, not an expense (§3). Chase checking →
-Amex is one movement of money. Counting it as spending double-counts everything you bought.
+### 8.3.1 The one piece of arithmetic that makes it correct
+
+The simplified model has a leak, and it's silent. Walk it through:
+
+```
+Chase checking:        $1,000
+Spend $80 on Amex →    Groceries envelope drops to $520
+                       Checking is still $1,000 — no cash moved
+```
+
+If Ready to Assign is computed against the checking balance alone, it now shows **$80
+available to assign** — money you have already spent and owe to Amex. Assign it and you're
+double-spending.
+
+**The fix — subtract outstanding card balances from cash on hand:**
+
+```
+Ready to Assign = ( Σ depository balances − Σ credit card balances )
+                  − Σ envelope balances
+```
+
+Because you pay in full monthly, a card's outstanding balance is precisely "spent but not
+yet paid," so subtracting it in aggregate is exactly right. This is the same correction
+YNAB's payment envelopes make per-card; you just don't need the per-card machinery when
+nothing carries.
+
+**Write a test for this on day one.** It's the kind of error that looks fine for weeks and
+then quietly overstates every number you rely on.
+
+**The card payment itself is a transfer**, not an expense (§3). Chase checking → Amex is one
+movement of money, and both sides are visible now that checking is linked. Counting it as
+spending double-counts everything you bought.
+
+**If you ever start carrying a balance**, revisit this — the aggregate correction stops
+being accurate and you'd want real payment envelopes.
 
 ### 8.4 Income
 
@@ -630,14 +659,12 @@ your numbers match theirs two months running.
 ## 13. Open questions
 
 ### Blocking
-1. **Do you pay Discover and Amex in full every month?** This is the last real design
-   question (§8.3). Pay in full → the simplified credit card model is correct and cheap.
-   Carry a balance → you need YNAB-style card payment envelopes from the start, because
-   the simplified model will tell you that you have money you've already committed, and
-   it's not a clean retrofit.
-2. **Overspending policy** (§8.2) — when an envelope goes negative, carry the negative into
-   next month, or absorb it from Ready to Assign? Household preference, not technical.
-   I'd default to carrying it forward.
+**None. Phase 0 is unblocked.**
+
+All decisions are settled: Cloudflare Workers/D1/Queues, own Plaid integration on the free
+Trial plan (Chase checking + debit, Discover, Amex), Sendblue free tier with two verified
+contacts, immediate per-transaction sending on pending, batch reply resolution, envelope
+budgeting with negatives carried forward, and the simplified credit card model.
 
 ### Shaping
 5. **"The customer"** — is this just you and your wife, or are you building toward other
