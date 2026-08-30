@@ -12,7 +12,7 @@
     {
       "binding": "DB",
       "database_name": "curtisclan",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "database_id": "60ec9b03-dc57-49b5-bc7c-e247bdf27eee",
       "migrations_dir": "migrations"
     }
   ],
