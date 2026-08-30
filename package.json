@@ -1,0 +1,28 @@
+{
+  "name": "curtisclan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Curtis Clan — self-owned budgeting app on Cloudflare Workers, fed by Plaid, with an iMessage categorization loop.",
+  "type": "module",
+  "scripts": {
+    "postinstall": "wrangler types || true",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply curtisclan --local",
+    "db:migrate:remote": "wrangler d1 migrations apply curtisclan --remote"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.19",
+    "@cloudflare/workers-types": "^4.20250906.0",
+    "@types/node": "^26.4.0",
+    "typescript": "^5.6.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^3.99.0"
+  },
+  "dependencies": {
+    "hono": "^4.6.14"
+  }
+}
