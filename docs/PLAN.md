@@ -119,6 +119,25 @@ SQLite, which has no decimal type, so this is doubly non-negotiable.
 
 ## 4. Ingest
 
+### 4.0 Plaid Trial plan covers your banks, free
+
+Your accounts are **Chase, Discover, and Amex**. Chase and Amex are OAuth institutions,
+which normally means full Production access plus a security questionnaire. But Plaid's
+**Trial plan** gives free access to real production data with **no business registration,
+no security questionnaire, and no contract**, and its OAuth coverage explicitly includes
+Chase and American Express. Transactions is one of the bundled products.
+
+**The cap is 10 Production Items.** You need three. Two constraints follow:
+
+- **`/item/remove` does not free a slot against the 10-Item cap.** Burn slots on repeated
+  test links and you cannot get them back. **Build and debug the entire Link flow against
+  Sandbox**, and only link real Chase/Discover/Amex accounts once it works end to end.
+- Adding a checking account and a savings account later still leaves headroom, but the cap
+  is the reason to be deliberate about every real link you create.
+
+This makes Plaid **free** for your use case, which changes the cost picture in §11
+substantially. Verify the current Trial terms when you sign up — plan details move.
+
 ### 4.1 You own the Plaid integration end to end
 
 No Replit connector — everything Plaid-side is yours to build on Workers:
@@ -145,9 +164,21 @@ No Replit connector — everything Plaid-side is yours to build on Workers:
   added/modified/removed explicitly and is idempotent by design.
 - Webhook Worker does exactly three things: **verify signature, enqueue, return 200.**
   Plaid retries on timeout — do real work in the request and you will double-process.
-- **Pending transactions rewrite themselves.** A $50 restaurant hold posts as $61 with tip.
-  Categorize pending optimistically, but **never send an iMessage about a pending
-  transaction** — you'll ask about a charge whose amount changes tomorrow. Wait for posted.
+- **Ask on pending, not posted.** Credit cards can sit pending for **1–3 days**, so waiting
+  for posted means asking "what was that $35 at Walmart?" three days later — exactly when
+  you can no longer remember. Ask while it's fresh. The amount changing doesn't invalidate
+  the answer: a $50 hold posting as $61 with tip is still dining, and the memo "lunch with
+  a friend" is still true.
+- **Carry the category across the pending→posted transition.** Plaid removes the pending
+  transaction, fires `TRANSACTIONS_REMOVED`, and returns a new posted transaction carrying
+  **`pending_transaction_id`** pointing at the removed one. Use it to move your category,
+  memo, and clarification history onto the posted row. Get this wrong and you re-ask about
+  every transaction twice.
+- **Handle the unmatched case.** Plaid occasionally fails to pair them: the posted
+  transaction arrives with **no** `pending_transaction_id` and the pending one is removed
+  anyway. Fall back to matching on account + similar amount + merchant within a short date
+  window. If that misses too, `merchant_memory` has already learned the merchant, so the
+  re-categorization is usually silent.
 - **Nightly cron reconciliation** to catch dropped webhooks. They get dropped.
 - **Backfill 12–24 months at setup.** This is what seeds `merchant_memory` so the app is
   smart on day one instead of asking you about all 40 of your recurring merchants.
@@ -250,31 +281,36 @@ already-closed transaction ("actually that Amazon was a gift"), and text that is
 money at all. When nothing is open, a reply falls through to intent parsing — corrections
 and questions like "how much on food this month?" both come out of the same call.
 
-### 5.5 How often to ask
+### 5.5 How often to ask — starting with immediate
 
-You described asking on **every** new transaction. Two to four cards run **80–150
-transactions a month**. As individual texts that's 3–5 pings a day forever, mostly about
-the same Starbucks, and the feature dies in week two.
+**Decision: send immediately on each new transaction**, to find out whether the prompt
+actually helps you organize spending. That's the right experiment — the value of asking in
+the moment is exactly what's unproven, and a daily digest would confound it with a recall
+delay.
 
-**Batching changes the math.** Your cost is measured in *messages you answer*, not
-transactions — one digest answered in one sentence is dramatically cheaper than three
-separate exchanges carrying the same information. So the limits can be looser than the
-one-at-a-time design needed:
+Two things make this work better than it did in the original one-at-a-time design:
 
-- **Daily digest [ASSUMED]** at a fixed hour in your timezone, containing everything
-  uncertain since the last one. One message, one reply, one confirmation.
-- **Training mode for the first 2–3 weeks.** Include nearly everything, because each
-  answer seeds `merchant_memory`. High volume, high value, explicitly temporary.
-- **Then decay** to new merchants, low confidence, close top-two categories, amount
-  outliers, or above a dollar floor you set.
-- **Cap digest length** (~10 items). Beyond that, ask about the highest-value and
-  highest-uncertainty ones and send the rest to the dashboard review queue — a 25-item
-  text is not answerable.
-- **Immediate send, bypassing the digest**, only for genuinely urgent items: a very large
-  charge or a possible-fraud signal.
-- **Always assign a best guess immediately.** The digest *corrects* the record; it never
-  blocks it. An unanswered text must never leave a transaction uncategorized.
+1. **The batch resolver still applies.** Immediate sending means several questions are open
+   at once — which is the same situation as a digest, just arrived separately. You get
+   three texts and answer once: *"walmart was groceries, starbucks was coffee, maverik was
+   gas."* §5.2 handles it unchanged. Answer whenever you want, in whatever grouping.
+2. **Asking on pending, not posted** (§4.2) means the text arrives while you still
+   remember the purchase.
+
+Keep from day one, because they're cheap and you'll want them:
+
+- **Quiet hours** per user timezone. Queue overnight, send in the morning.
+- **Never ask twice about the same merchant** — the first answer writes `merchant_memory`.
+  This alone kills most of the repetitive volume without any threshold tuning.
+- **Always assign a best guess immediately.** The text *corrects* the record; it never
+  blocks it. An unanswered message must never leave a transaction uncategorized.
 - **Time out after 48h**, keep the guess, flag it in the dashboard review queue.
+
+**Instrument the experiment.** Track answer rate and median time-to-reply per person, and
+chart it in the dashboard. That number is the honest verdict on whether this feature helps:
+if it stays high, immediate sending is working; when it falls off, that's the data telling
+you to gate. Build the gating thresholds (dollar floor, confidence, novelty, daily cap)
+behind config so you can turn them on the day it starts to grate, without a rewrite.
 
 ### 5.5 The compounding loop
 
@@ -397,13 +433,19 @@ Highest-consequence data you'll ever own.
 |---|---|
 | Cloudflare Workers Paid | ~$5/mo (needed for Queues) |
 | D1 | Free tier likely sufficient |
-| Plaid | **Verify directly** — per-item, and the real cost question |
-| Sendblue | **Verify** — per-message or subscription |
+| Plaid | **$0** on the Trial plan — 3 of 10 Items used (§4.0) |
+| Sendblue | **Verify** — per-message or subscription. Now the largest variable |
 | Claude API | Well under $1/mo with the cascade, prompt caching, and Batch API |
 | **vs Simplifi** | ~$4–6/mo |
 
-The AI is the cheapest line by an order of magnitude. Plaid and Sendblue decide whether
-this beats Simplifi on price. It may not — build it for the loop in §5, not to save $6.
+Plaid being free on the Trial plan removes what I'd assumed was the dominant cost. The
+remaining question is **Sendblue**, which immediate-send makes volume-sensitive: you'll
+send roughly one message per uncertain transaction plus a confirmation, so per-message
+pricing scales with exactly the behavior you're testing. Price that before Phase 3, and
+note it's the one line item the §5.5 gating thresholds directly control.
+
+If Sendblue lands cheap, this whole thing runs at roughly $5–10/mo and genuinely beats
+Simplifi on price as well as capability.
 
 ---
 
@@ -446,13 +488,17 @@ your numbers match theirs two months running.
 ## 13. Open questions
 
 ### Blocking
-1. **Do you have Plaid production access, and at which banks?** Chase, BofA, and Citi
-   require production approval and a security questionnaire. Which cards are these? Until
-   this is answered, Phase 1 can only be built against Plaid Sandbox.
-2. **Digest cadence and threshold.** §5.5 assumes one daily digest, training mode for
-   2–3 weeks, then gated by uncertainty. If you want everything in the digest permanently,
-   that works with batching — just say so.
-3. **Budget model** — monthly caps, or zero-based/envelope with rollover?
+1. **Is any of Chase/Discover/Amex a checking or savings account, or are all three credit
+   cards?** Discover and Amex are card-only. If Chase is also a card, then **nothing in
+   this plan can see your income or your savings** — paychecks land in a checking account
+   that isn't linked, savings goals have no balance to track, and card payments will look
+   like income unless suppressed. Your original ask was to sort income, expenses, *and*
+   savings goals; only expenses work with cards alone. Linking a checking account is the
+   single highest-value thing you can add, and you have 7 free Item slots.
+2. **Budget model** — monthly caps, or zero-based/envelope with rollover? This shapes the
+   schema, so it's worth settling before Phase 0.
+3. **What's your Sendblue pricing?** Immediate-send makes message volume the main cost
+   variable (§11).
 
 ### Shaping
 5. **"The customer"** — is this just you and your wife, or are you building toward other
