@@ -86,15 +86,38 @@ SQLite, which has no decimal type, so this is doubly non-negotiable.
   `prompt_version`. This is your audit trail *and* your eval set. Without it you can't
   answer "did categorization improve after I changed the prompt?"
 
-**Budgeting**
-- `category` — hierarchical, with `kind` ∈ {expense, income, savings, transfer}. This one
-  field is what makes "sort my income, expenses, and savings goals" fall out of the data
-  model instead of being hardcoded into every query.
-- `budget_period` — one per household per month; snapshots caps so editing this month
-  doesn't rewrite history.
-- `budget_line` — `category_id`, `limit_cents`, `rollover_cents` (unused at first, present
-  so envelope budgeting is a feature flag rather than a migration).
-- `savings_goal` — `target_cents`, `target_date`, `linked_account_id`.
+**Budgeting — envelope model (§8)**
+- `category` — hierarchical, with `kind` ∈ {expense, income, savings, transfer}. Expense
+  and savings categories *are* the envelopes; income and transfer categories are not
+  funded. One field, and "sort my income, expenses, and savings goals" falls out of the
+  data model instead of being hardcoded into every query.
+- `envelope` — the budgeting face of a category: `category_id`, `group`, `sort_order`,
+  `monthly_target_cents`, `target_date` (for goals), `archived_at`. **Archive, never
+  delete** — historical transactions reference it.
+- `allocation` — **a ledger row, not a setting.** `envelope_id`, `month`, `amount_cents`,
+  `source` (income assignment / envelope-to-envelope move / correction), `note`. Moving
+  $50 from Entertainment to Dining writes two rows.
+- `envelope_balance_snapshot` — month-end cache of computed balances. Performance only;
+  always regenerable from `allocation` + `transaction`.
+
+**The critical rule: envelope balances are derived, never stored as mutable numbers.**
+
+```
+balance(envelope, month) = balance(envelope, month-1)
+                         + Σ allocations(envelope, month)
+                         − Σ spending(envelope, month)
+```
+
+Store a mutable balance and you get drift you cannot audit or explain. Compute it, cache
+snapshots for speed, and always be able to rebuild from the ledger.
+
+This matters more than it sounds because **retroactive edits cascade forward**. Recategorize
+a March transaction in August and every month from March onward changes, since balances
+carry. Derived balances make that a recompute; stored balances make it a bug.
+
+**No separate `savings_goal` table.** In an envelope model a savings goal *is* an envelope
+with `monthly_target_cents` and `target_date`. "Vacation Fund" with a $3,000 target is the
+same object as "Groceries" with a $600 monthly target. One concept, less code.
 
 **The messaging loop**
 - `clarification` — `transaction_id`, `user_id`, `status`
@@ -389,40 +412,126 @@ Easy to skip, painful to retrofit:
 
 ---
 
-## 8. Budgets, income, savings
+## 8. Envelope budgeting
 
-**Budget model [ASSUMED]:** monthly caps per category, Simplifi-style. Familiar, quick to
-ship, no behavior change. But carry `rollover_cents` on `budget_line` from day one so
-envelope budgeting is a flag, not a migration.
+**Decision: envelope budgeting from the start.** Not monthly caps with rollover bolted on —
+a real envelope ledger, because retrofitting one onto caps is the migration I was trying to
+avoid.
 
-**Income** falls out of `category.kind = 'income'`. Handles multiple sources and irregular
-timing. Gross vs net and pre-tax deductions is a real modeling question **[OPEN]**.
+### 8.1 The model
 
-**Savings goals** need to answer "am I on track": `target_cents`, `target_date`, progress.
-Fund them from a **linked account balance [ASSUMED]** rather than virtual allocation —
-it can't drift from reality, and virtual allocation really wants envelope accounting
-underneath it.
+Every dollar you actually have gets assigned to an envelope. You budget **money that
+exists**, not projected income — that's the whole discipline, and it's why envelope
+budgeting works when caps don't.
 
-Savings contributions are their own `kind`, not an expense. Money moved to savings isn't
+- **Ready to Assign** — income lands here, unassigned. It is not an envelope; it's the
+  unallocated pool. `Ready to Assign = cash on hand − Σ envelope balances`.
+- **Assigning** — you move money from Ready to Assign into envelopes. Writes `allocation` rows.
+- **Spending** — a categorized transaction draws down its envelope's balance.
+- **Carryover** — whatever's left rolls into next month automatically. Unspent grocery money
+  is still grocery money.
+- **Moving money** — first-class operation with an audit trail. Overspent Dining? Move $40
+  from Entertainment. Two `allocation` rows, fully reversible.
+
+### 8.2 Overspending policy — decide this before you build
+
+An envelope can go negative, and you need a rule **[OPEN]**:
+
+- **Carry the negative forward** — next month's Groceries starts at −$40. Honest, and it
+  makes the consequence visible.
+- **Absorb from Ready to Assign** — the overspend eats unallocated cash, envelope resets to
+  zero. Gentler, and closer to how most people actually think.
+
+I'd start with **carry forward**, since hiding the overspend defeats the point of choosing
+envelopes over caps. But it's a household preference, not a technical one.
+
+### 8.3 Credit cards are the hard part
+
+This is where homegrown envelope implementations break, and you have two cards.
+
+The problem: you spend $80 on groceries with the Amex. The Groceries envelope should
+drop $80 — but no cash left your checking account. The money needs to be **set aside to pay
+the card**, or your envelopes will say you have money you've already committed.
+
+YNAB solves this with an automatic **credit card payment envelope**: spending $80 on the
+Amex from Groceries moves $80 out of Groceries and into "Amex Payment," which then funds the
+statement payment. Correct, and genuinely fiddly — returns, refunds, interest, and carried
+balances all have edge cases.
+
+**Two options:**
+
+| | Simplified | Full YNAB-style |
+|---|---|---|
+| Envelope on card spend | Drawn down immediately | Moved to a card payment envelope |
+| Answers "can I pay this card off?" | No — track card balance separately | Yes |
+| Works if you pay in full monthly | Fine | Fine |
+| Works if you carry a balance | Misleading | Correct |
+| Build cost | Low | Meaningfully higher |
+
+**Recommendation [ASSUMED]:** start simplified, since it's correct as long as you pay
+Discover and Amex in full each month. **Do you?** If you carry a balance, the simplified
+model will overstate what you have available and you want the payment-envelope design from
+the start — it's not a clean thing to retrofit.
+
+Either way, the **card payment itself is a transfer**, not an expense (§3). Chase checking →
+Amex is one movement of money. Counting it as spending double-counts everything you bought.
+
+### 8.4 Income
+
+Now that Chase checking is linked, income works properly. `category.kind = 'income'`,
+deposits land in Ready to Assign, and you assign from there. Options for reducing friction:
+
+- **Funding templates** — "fund all envelopes to their monthly targets," one click on payday
+- **Auto-assign on income** — apply the template automatically when a paycheck lands
+
+Gross vs net and pre-tax deductions remain **[OPEN]** — Plaid sees net deposits, so tracking
+gross requires manual entry. Probably not worth it unless you specifically want it.
+
+### 8.5 Savings goals
+
+Savings goals are envelopes with a target and a date (§3). "Am I on track" is
+`balance / target` against months remaining. No separate concept, no separate table, and
+the same funding mechanics as every other envelope.
+
+Savings contributions are `kind = 'savings'`, never expense. Money moved to savings isn't
 spent, and counting it as spending makes every expense number meaningless.
 
 ---
 
 ## 9. Dashboard
 
-**Home — month to date**
-- Spent vs budgeted, with a **pace indicator**: "60% through the month, 71% through food."
-  The single most useful number, and most apps omit it.
-- Category cards sorted by budget consumed, over-budget first
-- Income received vs expected · savings goal progress
+**Home — the envelope view**
+- **Ready to Assign** at the top, prominent. In envelope budgeting this is the number that
+  drives every decision, and it should be impossible to miss.
+- Envelope rows grouped by `group`: assigned, spent, **balance**. Balance is the number that
+  matters, not percent-of-budget.
+- Negative balances surfaced first, with a one-tap **"cover from another envelope"** action
+- Spending pace within the month, as a secondary signal
 - **Needs-review queue**, pinned — unanswered texts, low-confidence guesses, uncategorized
 
-**Transactions** — search/filter, inline category edit, bulk recategorize, split, memo.
-Show *why* something was categorized (rule / memory / AI + confidence, and the iMessage
-reply if there was one). That transparency is what makes you trust it.
+**Envelope management** (you asked for this explicitly)
+- Create, rename, group, reorder, set `monthly_target_cents` and `target_date`
+- **Archive, never delete** — history references envelopes. Archived ones disappear from
+  assignment but stay in past months.
+- Assign money from Ready to Assign; **move money between envelopes** as a first-class
+  action with a visible audit trail
+- **Funding templates**: "fund all to target," one click on payday
+- 3-month trailing average per envelope as a sanity check when setting a target
+- Envelopes are what the bot chooses from, so an envelope you create here is immediately
+  available as an answer over text — one list, not two
 
-**Budgets** — edit caps for current or future months, copy last month forward, show a
-3-month trailing average as a sanity check on the cap you're setting.
+**Transactions — correcting the bot** (you asked for this explicitly)
+- Inline edit of envelope, memo, and splits; **bulk recategorize**; exclude from budget
+- Show *why* something was categorized — rule / memory / AI + confidence, and the iMessage
+  exchange if there was one. That transparency is what makes you trust it.
+- **A manual edit is a first-class correction**, identical in weight to a text reply: it
+  writes `merchant_memory`, records `method = 'human'` with the prior value in
+  `transaction_classification`, and counts toward the "want a rule for this?" trigger (§5.5).
+  A correction made in the dashboard must teach the system exactly as much as one made over
+  text — otherwise you'll fix the same merchant forever.
+- **Undo**, especially for bulk operations
+- Editing a past month **recomputes envelope balances forward** from that month (§3). Show
+  what changed rather than silently reshuffling history.
 
 **Rules** — list with match counts, create/edit with live preview, review AI suggestions.
 
@@ -499,9 +608,15 @@ one-open-question queueing, unstructured reply parsing, disambiguation, timeouts
 rate limits and quiet hours, correction→rule suggestions.
 *Milestone: an ambiguous charge reaches the right phone and "lunch with a friend" files it.*
 
-**Phase 4 — Dashboard (~1–2 weeks)**
-MTD with pace, budget CRUD, transaction list with inline edit and split, review queue,
-rules UI with retroactive preview.
+**Phase 4 — Dashboard and envelope ledger (~2–3 weeks)**
+Envelope CRUD and grouping, allocation ledger with derived balances, Ready to Assign,
+move-money between envelopes, funding templates, transaction list with inline edit, split,
+bulk recategorize and undo, review queue, rules UI with retroactive preview.
+
+Larger than the earlier estimate: envelope budgeting is a real ledger, not a settings
+screen, and the derived-balance recompute on retroactive edits is where the difficulty
+actually sits.
+
 *Milestone: you stop opening Simplifi.*
 
 **Phase 5 — Polish**
@@ -515,15 +630,14 @@ your numbers match theirs two months running.
 ## 13. Open questions
 
 ### Blocking
-1. **Is any of Chase/Discover/Amex a checking or savings account, or are all three credit
-   cards?** Discover and Amex are card-only. If Chase is also a card, then **nothing in
-   this plan can see your income or your savings** — paychecks land in a checking account
-   that isn't linked, savings goals have no balance to track, and card payments will look
-   like income unless suppressed. Your original ask was to sort income, expenses, *and*
-   savings goals; only expenses work with cards alone. Linking a checking account is the
-   single highest-value thing you can add, and you have 7 free Item slots.
-2. **Budget model** — monthly caps, or zero-based/envelope with rollover? This shapes the
-   schema, so it's worth settling before Phase 0. **This is the last thing blocking Phase 0.**
+1. **Do you pay Discover and Amex in full every month?** This is the last real design
+   question (§8.3). Pay in full → the simplified credit card model is correct and cheap.
+   Carry a balance → you need YNAB-style card payment envelopes from the start, because
+   the simplified model will tell you that you have money you've already committed, and
+   it's not a clean retrofit.
+2. **Overspending policy** (§8.2) — when an envelope goes negative, carry the negative into
+   next month, or absorb it from Ready to Assign? Household preference, not technical.
+   I'd default to carrying it forward.
 
 ### Shaping
 5. **"The customer"** — is this just you and your wife, or are you building toward other
