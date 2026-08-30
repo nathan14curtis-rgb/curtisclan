@@ -69,3 +69,14 @@ export async function findUserByVerifiedPhone(db: D1Database, phoneE164: string)
     .bind(phoneE164)
     .first<User>();
 }
+
+/** Every household member who can actually receive iMessages — the
+ * recipient list for the shared group thread (src/messaging/groupChat.ts)
+ * and the set whose quiet hours gate a proactive send. */
+export async function listVerifiedUsersForHousehold(db: D1Database, householdId: string): Promise<User[]> {
+  const { results } = await db
+    .prepare(`SELECT * FROM user WHERE household_id = ? AND phone_verified_at IS NOT NULL ORDER BY created_at`)
+    .bind(householdId)
+    .all<User>();
+  return results;
+}

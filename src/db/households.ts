@@ -22,11 +22,18 @@ export async function createHousehold(
   // somewhere to file the first transaction (PLAN.md §8, Phase 0 milestone).
   await seedDefaultCategories(db, id);
 
-  return { id, name: input.name, timezone, created_at: now, updated_at: now };
+  return { id, name: input.name, timezone, group_chat_id: null, created_at: now, updated_at: now };
 }
 
 export async function getHousehold(db: D1Database, id: string): Promise<Household> {
   const row = await db.prepare(`SELECT * FROM household WHERE id = ?`).bind(id).first<Household>();
   if (!row) throw new NotFoundError("household", id);
   return row;
+}
+
+/** Set once, the first time a household-group message is sent — every
+ * later send reuses it to stay in the same Sendblue thread
+ * (src/messaging/groupChat.ts). */
+export async function setGroupChatId(db: D1Database, householdId: string, groupChatId: string): Promise<void> {
+  await db.prepare(`UPDATE household SET group_chat_id = ?, updated_at = ? WHERE id = ?`).bind(groupChatId, nowIso(), householdId).run();
 }

@@ -236,3 +236,109 @@ export async function splitTransaction(
 
   return created;
 }
+
+/** Few-shot context for the LLM layer (PLAN.md §6): "5-10 similar past
+ * transactions with their final categories." Same merchant, already
+ * categorized, most recent first. */
+export async function listRecentCategorizedByMerchant(
+  db: D1Database,
+  householdId: string,
+  normalizedMerchant: string,
+  limit = 5,
+): Promise<Transaction[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM "transaction"
+         WHERE household_id = ? AND normalized_merchant = ? AND category_id IS NOT NULL
+         ORDER BY posted_at DESC LIMIT ?`,
+    )
+    .bind(householdId, normalizedMerchant, limit)
+    .all<Transaction>();
+  return results;
+}
+
+/** Backs the "fix X" correction flow (PLAN.md §5.3): the most recent
+ * categorized transaction whose merchant or description contains the
+ * given text, case-insensitive. */
+export async function findRecentTransactionByMerchantSubstring(
+  db: D1Database,
+  householdId: string,
+  needle: string,
+  limit = 30,
+): Promise<Transaction | null> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM "transaction"
+         WHERE household_id = ? AND category_id IS NOT NULL
+         ORDER BY posted_at DESC LIMIT ?`,
+    )
+    .bind(householdId, limit)
+    .all<Transaction>();
+
+  const lowerNeedle = needle.toLowerCase();
+  return (
+    results.find(
+      (t) => (t.normalized_merchant ?? "").toLowerCase().includes(lowerNeedle) || t.raw_description.toLowerCase().includes(lowerNeedle),
+    ) ?? null
+  );
+}
+
+export async function getTransactionByPlaidTxnId(db: D1Database, plaidTxnId: string): Promise<Transaction | null> {
+  return db.prepare(`SELECT * FROM "transaction" WHERE plaid_txn_id = ?`).bind(plaidTxnId).first<Transaction>();
+}
+
+/** A Plaid `modified` entry, or a re-delivered `added` entry — same fields
+ * change either way, and category/memo are never touched here (PLAN.md
+ * §4.2: the category must survive an amount correction). */
+export async function updateTransactionFieldsFromPlaid(
+  db: D1Database,
+  transactionId: string,
+  fields: { postedAt: string; amountCents: number; rawDescription: string; normalizedMerchant: string | null; pending: boolean },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE "transaction"
+         SET posted_at = ?, amount_cents = ?, raw_description = ?, normalized_merchant = ?, pending = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(fields.postedAt, fields.amountCents, fields.rawDescription, fields.normalizedMerchant, fields.pending ? 1 : 0, nowIso(), transactionId)
+    .run();
+}
+
+/**
+ * Plaid removes the pending transaction and returns a new posted one
+ * carrying pending_transaction_id (PLAN.md §4.2). Rather than insert a new
+ * row and lose the pending row's category/memo/clarification history,
+ * this *renames* the existing row onto the new plaid_txn_id and updates
+ * its posted fields in place — "carry the category across the
+ * pending→posted transition," not re-ask about every transaction twice.
+ */
+export async function carryPendingToPosted(
+  db: D1Database,
+  transactionId: string,
+  fields: { newPlaidTxnId: string; postedAt: string; amountCents: number; rawDescription: string; normalizedMerchant: string | null },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE "transaction"
+         SET plaid_txn_id = ?, pending_plaid_txn_id = NULL, posted_at = ?, amount_cents = ?, raw_description = ?, normalized_merchant = ?, pending = 0, updated_at = ?
+       WHERE id = ?`,
+    )
+    .bind(fields.newPlaidTxnId, fields.postedAt, fields.amountCents, fields.rawDescription, fields.normalizedMerchant, nowIso(), transactionId)
+    .run();
+}
+
+/** A transaction Plaid reports as truly removed (not a pending→posted
+ * carry-over, which never reaches this function — see carryPendingToPosted).
+ * Clears its audit/clarification children first since D1 enforces the
+ * foreign keys referencing transaction(id). */
+export async function removeTransactionByPlaidTxnId(db: D1Database, householdId: string, plaidTxnId: string): Promise<void> {
+  const existing = await getTransactionByPlaidTxnId(db, plaidTxnId);
+  if (!existing || existing.household_id !== householdId) return;
+
+  await db.batch([
+    db.prepare(`DELETE FROM transaction_classification WHERE transaction_id = ?`).bind(existing.id),
+    db.prepare(`DELETE FROM clarification WHERE transaction_id = ?`).bind(existing.id),
+    db.prepare(`DELETE FROM "transaction" WHERE id = ?`).bind(existing.id),
+  ]);
+}

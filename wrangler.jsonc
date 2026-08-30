@@ -6,8 +6,8 @@
   "compatibility_flags": ["nodejs_compat"],
 
   // One binding per environment layer described in PLAN.md §2/§4/§10.
-  // Real IDs are created with `wrangler d1 create curtisclan` /
-  // `wrangler queues create curtisclan-transactions` and filled in before deploy.
+  // Real IDs are created with `wrangler d1 create curtisclan` and filled
+  // in before deploy — see README "Deploying for real".
   "d1_databases": [
     {
       "binding": "DB",
@@ -17,24 +17,33 @@
     }
   ],
 
-  // Queues + cron are declared here so the shape is right when Phase 1 wires
-  // real consumers; they are inert until `[[queues.consumers]]` and a
-  // scheduled() handler exist.
+  // Two queues (PLAN §5.0: "make sure the send path queues rather than
+  // fires in parallel"). curtisclan-transactions carries Plaid ingest,
+  // categorization, and reply-resolution jobs; curtisclan-messages
+  // carries only outbound Sendblue sends, at low concurrency so bursts of
+  // new transactions don't fire several texts at once.
   "queues": {
     "producers": [
-      { "binding": "TRANSACTION_QUEUE", "queue": "curtisclan-transactions" }
+      { "binding": "TRANSACTION_QUEUE", "queue": "curtisclan-transactions" },
+      { "binding": "MESSAGE_QUEUE", "queue": "curtisclan-messages" }
+    ],
+    "consumers": [
+      { "queue": "curtisclan-transactions", "max_batch_size": 10, "max_retries": 5, "max_concurrency": 5 },
+      { "queue": "curtisclan-messages", "max_batch_size": 5, "max_retries": 5, "max_concurrency": 1 }
     ]
   },
 
+  // Nightly reconciliation (PLAN §4.2, §12 Phase 1) — 09:00 UTC ≈ 2-3am
+  // Mountain depending on DST; adjust to taste.
   "triggers": {
-    "crons": []
+    "crons": ["0 9 * * *"]
   },
 
   "vars": {
     "ENVIRONMENT": "development"
   }
 
-  // Secrets (Plaid client id/secret, Sendblue key, Anthropic key, token
-  // encryption key) are set with `wrangler secret put <NAME>` per PLAN.md
-  // §10 — never listed here.
+  // Secrets (Plaid client id/secret, Sendblue keys, Anthropic key, token
+  // encryption key) are set with `wrangler secret put <NAME>` per
+  // PLAN.md §10 — never listed here. Exact commands: README "Secrets".
 }
