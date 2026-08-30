@@ -1,0 +1,41 @@
+import type { SendMessageResponse } from "./types";
+
+/**
+ * Sendblue REST client (PLAN.md §2, §5). Auth is two headers, not a
+ * bearer token — sb-api-key-id / sb-api-secret-key.
+ */
+export interface SendblueConfig {
+  apiKeyId: string;
+  apiSecretKey: string;
+  baseUrl: string; // default https://api.sendblue.com/api
+}
+
+export class SendblueApiError extends Error {
+  constructor(public readonly status: number, public readonly body: unknown) {
+    super(`Sendblue API error ${status}: ${JSON.stringify(body)}`);
+    this.name = "SendblueApiError";
+  }
+}
+
+export async function sendMessage(
+  config: SendblueConfig,
+  input: { to: string; content: string; statusCallbackUrl?: string },
+): Promise<SendMessageResponse> {
+  const response = await fetch(`${config.baseUrl}/send-message`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "sb-api-key-id": config.apiKeyId,
+      "sb-api-secret-key": config.apiSecretKey,
+    },
+    body: JSON.stringify({
+      number: input.to,
+      content: input.content,
+      status_callback: input.statusCallbackUrl,
+    }),
+  });
+
+  const json = await response.json();
+  if (!response.ok) throw new SendblueApiError(response.status, json);
+  return json as SendMessageResponse;
+}

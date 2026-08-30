@@ -10,6 +10,12 @@ import { envelopesRoute } from "./routes/envelopes";
 import { transactionsRoute } from "./routes/transactions";
 import { rulesRoute } from "./routes/rules";
 import { importRoute } from "./routes/importCsv";
+import { plaidRoute } from "./routes/plaid";
+import { plaidWebhookRoute } from "./routes/plaidWebhook";
+import { sendblueWebhookRoute } from "./routes/sendblueWebhook";
+import { handleQueueBatch } from "./queue/consumer";
+import { enqueueNightlyReconciliation } from "./plaid/reconciliation";
+import type { MessageQueueMessage, TransactionQueueMessage } from "./lib/queueMessages";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -37,12 +43,25 @@ scoped.route("/:householdId/envelopes", envelopesRoute);
 scoped.route("/:householdId/transactions", transactionsRoute);
 scoped.route("/:householdId/rules", rulesRoute);
 scoped.route("/:householdId/import", importRoute);
+scoped.route("/:householdId/plaid", plaidRoute);
 
 app.route("/api/households", scoped);
 
-export default app;
+// Webhook endpoints are top-level, not under /api/households — Plaid and
+// Sendblue don't speak our household-scoped API shape, and each handler
+// resolves (or verifies) the household itself (PLAN §4.1, §10).
+app.route("/webhooks/plaid", plaidWebhookRoute);
+app.route("/webhooks/sendblue", sendblueWebhookRoute);
 
-// Queue consumer and scheduled() cron handler are Phase 1/1-reconciliation
-// work (PLAN §4.2, §12) — not added until there's a real Plaid webhook and
-// /transactions/sync cursor to drive them, so an empty handler doesn't
-// silently "succeed" against nothing.
+export default {
+  fetch: app.fetch,
+
+  queue: handleQueueBatch,
+
+  // Nightly reconciliation (PLAN §4.2: "webhooks... get dropped"). Cron
+  // schedule is set in wrangler.jsonc.
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const count = await enqueueNightlyReconciliation(env);
+    console.log(`nightly reconciliation: enqueued sync for ${count} plaid item(s)`);
+  },
+} satisfies ExportedHandler<Env, TransactionQueueMessage | MessageQueueMessage>;

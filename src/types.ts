@@ -41,9 +41,26 @@ export interface Account {
   mask: string | null;
   plaid_item_id: string | null;
   plaid_account_id: string | null;
-  plaid_access_token_ciphertext: string | null;
-  plaid_access_token_iv: string | null;
   status: AccountStatus;
+  current_balance_cents: number | null;
+  available_balance_cents: number | null;
+  balance_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type PlaidItemStatus = "active" | "login_required" | "removed";
+
+export interface PlaidItem {
+  id: string;
+  household_id: string;
+  plaid_item_id: string;
+  access_token_ciphertext: string;
+  access_token_iv: string;
+  institution_name: string | null;
+  status: PlaidItemStatus;
+  cursor: string | null;
+  last_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -188,5 +205,19 @@ export interface Rule {
 export interface Env {
   DB: D1Database;
   TRANSACTION_QUEUE: Queue;
+  MESSAGE_QUEUE: Queue;
   ENVIRONMENT: string;
+
+  // Workers Secrets (wrangler secret put <NAME>) — see README for the
+  // exact commands. Optional at the type level because local dev without
+  // them should still boot; every call site that needs one checks it.
+  TOKEN_ENCRYPTION_KEY?: string; // base64 AES-256 key, src/lib/crypto.ts
+  PLAID_CLIENT_ID?: string;
+  PLAID_SECRET?: string;
+  PLAID_ENV?: "sandbox" | "production";
+  SENDBLUE_API_KEY_ID?: string;
+  SENDBLUE_API_SECRET_KEY?: string;
+  SENDBLUE_SIGNING_SECRET?: string;
+  SENDBLUE_API_BASE_URL?: string; // default https://api.sendblue.com/api
+  ANTHROPIC_API_KEY?: string;
 }
