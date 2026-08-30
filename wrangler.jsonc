@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "curtisclan",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // One binding per environment layer described in PLAN.md §2/§4/§10.
+  // Real IDs are created with `wrangler d1 create curtisclan` /
+  // `wrangler queues create curtisclan-transactions` and filled in before deploy.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "curtisclan",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Queues + cron are declared here so the shape is right when Phase 1 wires
+  // real consumers; they are inert until `[[queues.consumers]]` and a
+  // scheduled() handler exist.
+  "queues": {
+    "producers": [
+      { "binding": "TRANSACTION_QUEUE", "queue": "curtisclan-transactions" }
+    ]
+  },
+
+  "triggers": {
+    "crons": []
+  },
+
+  "vars": {
+    "ENVIRONMENT": "development"
+  }
+
+  // Secrets (Plaid client id/secret, Sendblue key, Anthropic key, token
+  // encryption key) are set with `wrangler secret put <NAME>` per PLAN.md
+  // §10 — never listed here.
+}
