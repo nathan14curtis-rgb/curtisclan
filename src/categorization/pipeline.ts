@@ -16,10 +16,16 @@ function buildLlmClassifier(env: Env): LlmClassifier {
   return new ClaudeLlmClassifier(new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }));
 }
 
-/** PLAN.md §1's example: "$47.83 at THE HIVE MERCANTILE. What was this?" */
-function buildQuestionText(amountCents: number, merchant: string | null, rawDescription: string): string {
+/**
+ * PLAN.md §1's example: "$47.83 at THE HIVE MERCANTILE. What was this?"
+ * — with the account name appended once questions go to a shared group
+ * thread (src/messaging/groupChat.ts) rather than straight to the card
+ * owner, since which card a charge landed on is no longer implicit from
+ * who the text arrived at.
+ */
+function buildQuestionText(amountCents: number, merchant: string | null, rawDescription: string, accountName: string): string {
   const dollars = (Math.abs(amountCents) / 100).toFixed(2);
-  return `$${dollars} at ${merchant ?? rawDescription}. What was this?`;
+  return `$${dollars} at ${merchant ?? rawDescription} (${accountName}). What was this?`;
 }
 
 /**
@@ -92,7 +98,7 @@ export async function categorizeTransaction(env: Env, householdId: string, trans
   const clarification = await createClarification(env.DB, householdId, {
     transactionId,
     userId: askee.id,
-    questionText: buildQuestionText(transaction.amount_cents, transaction.normalized_merchant, transaction.raw_description),
+    questionText: buildQuestionText(transaction.amount_cents, transaction.normalized_merchant, transaction.raw_description, account.name),
   });
 
   const message: MessageQueueMessage = { type: "send_clarification", householdId, clarificationId: clarification.id };

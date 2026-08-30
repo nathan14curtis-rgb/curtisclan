@@ -1,4 +1,4 @@
-import type { SendMessageResponse } from "./types";
+import type { SendGroupMessageResponse, SendMessageResponse } from "./types";
 
 /**
  * Sendblue REST client (PLAN.md §2, §5). Auth is two headers, not a
@@ -38,4 +38,32 @@ export async function sendMessage(
   const json = await response.json();
   if (!response.ok) throw new SendblueApiError(response.status, json);
   return json as SendMessageResponse;
+}
+
+/**
+ * POST /send-group-message (PLAN.md §5, extended for a household group
+ * thread). Pass `numbers` the first time — Sendblue creates the group and
+ * returns a `group_id`; every later send passes that `group_id` instead
+ * to stay in the same thread rather than creating a new one each time.
+ */
+export async function sendGroupMessage(
+  config: SendblueConfig,
+  input: { numbers: string[]; content: string } | { groupId: string; content: string },
+): Promise<SendGroupMessageResponse> {
+  const body =
+    "groupId" in input ? { group_id: input.groupId, content: input.content } : { numbers: input.numbers, content: input.content };
+
+  const response = await fetch(`${config.baseUrl}/send-group-message`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "sb-api-key-id": config.apiKeyId,
+      "sb-api-secret-key": config.apiSecretKey,
+    },
+    body: JSON.stringify(body),
+  });
+
+  const json = await response.json();
+  if (!response.ok) throw new SendblueApiError(response.status, json);
+  return json as SendGroupMessageResponse;
 }

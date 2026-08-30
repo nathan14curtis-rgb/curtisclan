@@ -3,11 +3,12 @@ import type { Account, Clarification, ClarificationStatus, User } from "../types
 import { getScoped, nowIso } from "./client";
 
 /**
- * Who gets asked about a charge (PLAN.md §3: owner_user_id "routes a
- * question to the right person"). A joint account with no owner falls
- * back to the first verified user in the household — §13 Q6 ("ask a
- * designated default, or ask both?") is still open; "ask a default" is
- * the [ASSUMED] answer until that's settled.
+ * The nominal asker recorded on a clarification (PLAN.md §3: owner_user_id
+ * "routes a question to the right person"). Since every clarification is
+ * actually sent to the shared household group thread (§13 Q6 is answered
+ * by asking everyone at once), this no longer picks who receives the
+ * text — it's audit/context only (clarification.user_id). Falls back to
+ * the first verified household user when the account has no owner.
  */
 export async function resolveAskee(db: D1Database, householdId: string, account: Account): Promise<User | null> {
   if (account.owner_user_id) {
@@ -71,13 +72,18 @@ export async function markClarificationTimedOut(db: D1Database, id: string): Pro
   await db.prepare(`UPDATE clarification SET status = 'timed_out', timed_out_at = ? WHERE id = ?`).bind(nowIso(), id).run();
 }
 
-/** Every clarification the resolver should try to match a reply against —
+/**
+ * Every clarification the resolver should try to match a reply against —
  * "match against all open clarifications for that number, not just the
- * newest batch" (PLAN.md §5.2). */
-export async function listOpenClarificationsForUser(db: D1Database, userId: string): Promise<Clarification[]> {
+ * newest batch" (PLAN.md §5.2). Household-scoped, not per-user: every
+ * clarification goes to the shared group thread, so a reply from either
+ * spouse can answer anything open for the household, regardless of which
+ * account owner the question was nominally addressed to.
+ */
+export async function listOpenClarificationsForHousehold(db: D1Database, householdId: string): Promise<Clarification[]> {
   const { results } = await db
-    .prepare(`SELECT * FROM clarification WHERE user_id = ? AND status = 'sent' ORDER BY created_at`)
-    .bind(userId)
+    .prepare(`SELECT * FROM clarification WHERE household_id = ? AND status = 'sent' ORDER BY created_at`)
+    .bind(householdId)
     .all<Clarification>();
   return results;
 }

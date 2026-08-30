@@ -1,13 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { HAIKU_MODEL } from "../categorization/llm";
-import { getSendblueConfig } from "../lib/secrets";
 import type { MessageQueueMessage } from "../lib/queueMessages";
 import type { Env } from "../types";
-import { createClarification, listOpenClarificationsForUser, markClarificationAnswered } from "../db/clarifications";
+import { createClarification, listOpenClarificationsForHousehold, markClarificationAnswered } from "../db/clarifications";
 import { listCategories } from "../db/categories";
 import { applyCategorization, findRecentTransactionByMerchantSubstring, getTransaction } from "../db/transactions";
-import { getUser } from "../db/users";
-import { sendMessage } from "../sendblue/client";
+import { sendToHouseholdGroup } from "./groupChat";
 import { resolveReply, type OpenClarificationItem } from "./replyResolver";
 
 const FIX_PATTERN = /^\s*fix\s+(.+)$/i;
@@ -18,10 +16,13 @@ const MIN_MATCH_CONFIDENCE = 0.55;
 /**
  * Handles one inbound Sendblue text (PLAN.md §5.2–§5.4): "fix X"
  * corrections first, then the batch resolver against every open
- * clarification for this user. Intent parsing for "nothing open" replies
- * (Q&A like "how much on food this month?") is PLAN.md §13 Q13 — still an
- * open decision, not built here; such a reply is left unresolved rather
- * than guessed at.
+ * clarification for the household's shared group thread — either spouse
+ * can answer anything open, not just charges nominally addressed to them.
+ * `userId` (who actually sent this text) is used only for attribution
+ * (transaction_classification.created_by_user_id). Intent parsing for
+ * "nothing open" replies (Q&A like "how much on food this month?") is
+ * PLAN.md §13 Q13 — still an open decision, not built here; such a reply
+ * is left unresolved rather than guessed at.
  */
 export async function processInboundReply(env: Env, householdId: string, userId: string, content: string): Promise<void> {
   const fixMatch = content.match(FIX_PATTERN);
@@ -30,7 +31,7 @@ export async function processInboundReply(env: Env, householdId: string, userId:
     return;
   }
 
-  const open = await listOpenClarificationsForUser(env.DB, userId);
+  const open = await listOpenClarificationsForHousehold(env.DB, householdId);
   if (open.length === 0) return;
   if (!env.ANTHROPIC_API_KEY) return; // leaves clarifications open for the next reply once configured
 
@@ -72,13 +73,10 @@ export async function processInboundReply(env: Env, householdId: string, userId:
 
   if (applied.length === 0) return;
 
-  const user = await getUser(env.DB, householdId, userId);
-  if (!user.phone_e164) return;
-
   // The confirmation message is not optional (PLAN.md §5.3): batching
   // removes the self-correcting property of one-at-a-time asks, so every
   // resolution is echoed back for a two-second correction.
-  await sendMessage(getSendblueConfig(env), { to: user.phone_e164, content: buildConfirmationText(applied) });
+  await sendToHouseholdGroup(env, householdId, buildConfirmationText(applied));
 }
 
 function buildConfirmationText(applied: Array<{ merchant: string; amountCents: number; categoryName: string }>): string {
@@ -87,12 +85,9 @@ function buildConfirmationText(applied: Array<{ merchant: string; amountCents: n
 }
 
 async function handleFixCommand(env: Env, householdId: string, userId: string, merchantText: string): Promise<void> {
-  const user = await getUser(env.DB, householdId, userId);
-  if (!user.phone_e164) return;
-
   const transaction = await findRecentTransactionByMerchantSubstring(env.DB, householdId, merchantText);
   if (!transaction) {
-    await sendMessage(getSendblueConfig(env), { to: user.phone_e164, content: `I don't see a recent charge matching "${merchantText}".` });
+    await sendToHouseholdGroup(env, householdId, `I don't see a recent charge matching "${merchantText}".`);
     return;
   }
 

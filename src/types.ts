@@ -14,6 +14,9 @@ export interface Household {
   id: string;
   name: string;
   timezone: string;
+  // Sendblue's group thread id, set the first time a clarification is
+  // sent — every household-scoped message reuses it (src/messaging/groupChat.ts).
+  group_chat_id: string | null;
   created_at: string;
   updated_at: string;
 }

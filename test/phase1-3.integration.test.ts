@@ -14,7 +14,7 @@ import { createPlaidItem, getPlaidAccessToken, getPlaidItemByPlaidId, listActive
 import { listCategories } from "../src/db/categories";
 import { createTransaction, getTransaction } from "../src/db/transactions";
 import { detectAndMarkTransfer } from "../src/db/transfers";
-import { createClarification, getLatestClarificationForTransaction, listOpenClarificationsForUser, markClarificationAnswered, markClarificationSent, resolveAskee } from "../src/db/clarifications";
+import { createClarification, getLatestClarificationForTransaction, listOpenClarificationsForHousehold, markClarificationAnswered, markClarificationSent, resolveAskee } from "../src/db/clarifications";
 import { createInboundMessage, findInboundMessageByHandle } from "../src/db/inboundMessages";
 import { importEncryptionKey } from "../src/lib/crypto";
 import { categorizeTransaction } from "../src/categorization/pipeline";
@@ -154,13 +154,13 @@ describe("clarifications", () => {
     const txn = await createTransaction(db, household.id, { accountId: checking.id, postedAt: "2026-03-10", amountCents: -1000, rawDescription: "X" });
     const clarification = await createClarification(db, household.id, { transactionId: txn.id, userId: nathan.id, questionText: "What was this?" });
 
-    expect(await listOpenClarificationsForUser(db, nathan.id)).toHaveLength(0); // still 'queued', not 'sent'
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(0); // still 'queued', not 'sent'
 
     await markClarificationSent(db, clarification.id, "sb-handle-1");
-    expect(await listOpenClarificationsForUser(db, nathan.id)).toHaveLength(1);
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(1);
 
     await markClarificationAnswered(db, clarification.id);
-    expect(await listOpenClarificationsForUser(db, nathan.id)).toHaveLength(0);
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(0);
 
     const latest = await getLatestClarificationForTransaction(db, household.id, txn.id);
     expect(latest?.status).toBe("answered");
@@ -194,7 +194,7 @@ describe("categorizeTransaction pipeline", () => {
 
     const updated = await getTransaction(db, household.id, txn.id);
     expect(updated.category_id).toBe(groceries.id);
-    expect(await listOpenClarificationsForUser(db, nathan.id)).toHaveLength(0);
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(0);
   });
 
   it("applies a warm merchant-memory match without asking", async () => {
@@ -210,7 +210,7 @@ describe("categorizeTransaction pipeline", () => {
 
     const updated = await getTransaction(db, household.id, txn.id);
     expect(updated.category_id).toBe(groceries.id);
-    expect(await listOpenClarificationsForUser(db, nathan.id)).toHaveLength(0);
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(0);
   });
 
   it("asks a human and assigns no category when nothing matches and no LLM key is configured", async () => {
@@ -259,6 +259,6 @@ describe("categorizeTransaction pipeline", () => {
     await categorizeTransaction(env, household.id, debit.id);
     await categorizeTransaction(env, household.id, credit.id);
 
-    expect(await listOpenClarificationsForUser(db, nathan.id)).toHaveLength(0);
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(0);
   });
 });

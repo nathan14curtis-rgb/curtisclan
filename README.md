@@ -32,12 +32,28 @@ reply against every open clarification), the confirmation message
 (§5.3), a "fix &lt;merchant&gt;" correction flow, and quiet-hours-aware
 sending via a low-concurrency outbound queue.
 
-**112 tests**, `vitest run` green, `tsc --noEmit` clean. Pure logic is
+**One shared group chat, not per-owner 1:1 texts:** every clarification,
+confirmation, and correction goes to a single household-level iMessage
+group thread (`src/messaging/groupChat.ts`) instead of whichever spouse
+owns the card that charge landed on. This is the answer to PLAN.md §13
+Q6 ("ask a designated default, or ask both?") the household actually
+wanted: ask everyone, in one thread. The group is created on the first
+message (Sendblue's `/send-group-message` with every verified number) and
+its `group_id` is reused for every later send; either spouse can answer
+any open charge (attributed to whoever actually replied), and quiet hours
+now wait for *whichever* spouse's window ends latest rather than one
+fixed recipient's. Since the recipient is no longer implicitly "the card
+owner," each question names the account too: `"$47.83 at THE HIVE
+MERCANTILE (Amex). What was this?"`
+
+**121 tests**, `vitest run` green, `tsc --noEmit` clean. Pure logic is
 tested directly (including a real generated ES256 keypair signing/
 verifying an actual JWT — not a mocked crypto call); D1-backed code runs
 against a real migrated database via `@cloudflare/vitest-pool-workers`
-(miniflare); the LLM-calling code is tested against a fake `Anthropic`
-client double, since this environment holds no live API keys.
+(miniflare), including the group-send/quiet-hours paths tested against a
+real D1 + a stubbed `fetch` intercepting the Sendblue call; the
+Claude-calling code is tested against a fake `Anthropic` client double,
+since this environment holds no live API keys.
 
 ### Deliberately not built yet
 
@@ -50,6 +66,10 @@ client double, since this environment holds no live API keys.
 - **Nightly Batch API orchestration**: `submitCategorizationBatch` /
   `parseCategorizationBatchResults` exist and are tested, but nothing yet
   tracks a batch id across cron ticks to drive a bulk backfill job.
+- **Adding a member to an existing group chat**: the household group is
+  created once from whoever is verified at that moment; a user verified
+  afterward isn't auto-added (Sendblue's `/modify-group` endpoint would
+  do this — not wired up).
 - **Live end-to-end verification**: this build environment holds no real
   Plaid/Sendblue/Anthropic credentials, so nothing here has been run
   against the actual services — only against real D1/crypto and faked
@@ -136,7 +156,12 @@ npm run typecheck # tsc --noEmit
      `POST /:householdId/users/:userId/verify-phone` with `{"phoneE164": "+1..."}`
      to bind the number — this is the only thing authenticating an
      inbound reply (§10), so nothing sends to or trusts a number that
-     hasn't gone through this.
+     hasn't gone through this. **Verify both spouses before the first
+     clarification fires**: the group chat is created once, from whoever
+     is verified at that moment (`src/messaging/groupChat.ts`) — someone
+     verified later isn't automatically added to an already-created group
+     (Sendblue has a `/modify-group` endpoint for this; not wired up yet,
+     see below).
 6. **Build and link accounts against Plaid Sandbox first** (PLAN.md §4.0):
    the 10-Item cap on real accounts doesn't refund on `/item/remove` — get
    the Link flow working end to end in Sandbox, then switch
@@ -156,7 +181,7 @@ src/
   categorization/        Rules engine, merchant-memory matcher, confidence gate, cascade, Claude classifier
   plaid/                 Plaid REST client, webhook JWT verification, /transactions/sync orchestration
   sendblue/               Sendblue REST client + webhook payload types
-  messaging/              Quiet hours, outbound send, inbound reply resolver + "fix X" corrections
+  messaging/              Household group chat, quiet hours, outbound send, inbound reply resolver + "fix X" corrections
   queue/                  The one queue() consumer, branching on which queue a batch came from
   routes/                 Hono route handlers, one file per resource, plus the two webhook routes
   index.ts                Worker entrypoint: fetch + queue + scheduled
