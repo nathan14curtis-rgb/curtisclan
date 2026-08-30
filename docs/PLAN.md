@@ -119,6 +119,28 @@ SQLite, which has no decimal type, so this is doubly non-negotiable.
 
 ## 4. Ingest
 
+### 4.1 You own the Plaid integration end to end
+
+No Replit connector — everything Plaid-side is yours to build on Workers:
+
+- **Link flow.** Plaid Link web SDK in the dashboard, backed by two Worker endpoints:
+  one to create a `link_token`, one to exchange the returned `public_token` for a
+  permanent `access_token`. The exchange must happen server-side; a `public_token` is
+  short-lived and the `access_token` must never reach the browser.
+- **Token encryption.** `access_token` per item, encrypted at rest in D1 with **AES-GCM
+  via the Workers Web Crypto API**, key held in Workers Secrets. Workers has Web Crypto
+  natively, so this is straightforward — but a plaintext token column is a full read of
+  every linked account, so treat it as the one thing not to defer.
+- **Webhook verification.** Plaid signs webhooks with a **JWT (ES256)** verified against a
+  key from `/webhook_verification_key/get`. Workers' Web Crypto can do ES256, but this is
+  real work, not a header comparison. Don't skip it and don't "add it later" — an
+  unverified webhook endpoint lets anyone inject transactions into your ledger.
+- **Re-auth handling.** Items break: expired credentials, MFA changes, bank migrations.
+  Plaid signals this via `ITEM_LOGIN_REQUIRED`. Catch it, mark the account, and surface a
+  re-link prompt in the dashboard. Skip this and the app silently stops seeing a card.
+
+### 4.2 Sync mechanics
+
 - Use Plaid's **`/transactions/sync`** cursor endpoint, not date ranges. It returns
   added/modified/removed explicitly and is idempotent by design.
 - Webhook Worker does exactly three things: **verify signature, enqueue, return 200.**
@@ -424,16 +446,13 @@ your numbers match theirs two months running.
 ## 13. Open questions
 
 ### Blocking
-1. **Which Plaid setup do you have?** If it's the *Replit* Plaid connector, it doesn't
-   travel to Cloudflare — that connector handles Link and token storage inside Replit's
-   platform. On Workers you need your own Plaid account and you build the Link flow and
-   token encryption yourself. This changes Phase 1 materially.
-2. **Do you have Plaid production access, and at which banks?** Chase, BofA, and Citi
-   require production approval and a security questionnaire. Which cards are these?
-3. **Ask on every transaction, or gated by uncertainty?** §5.4. I've assumed gated with a
-   training-mode ramp. If you truly want every one, say so and I'll drop the caps — but
-   the one-open-question-at-a-time design has to change too.
-4. **Budget model** — monthly caps, or zero-based/envelope with rollover?
+1. **Do you have Plaid production access, and at which banks?** Chase, BofA, and Citi
+   require production approval and a security questionnaire. Which cards are these? Until
+   this is answered, Phase 1 can only be built against Plaid Sandbox.
+2. **Digest cadence and threshold.** §5.5 assumes one daily digest, training mode for
+   2–3 weeks, then gated by uncertainty. If you want everything in the digest permanently,
+   that works with batching — just say so.
+3. **Budget model** — monthly caps, or zero-based/envelope with rollover?
 
 ### Shaping
 5. **"The customer"** — is this just you and your wife, or are you building toward other
