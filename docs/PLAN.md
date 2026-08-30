@@ -189,6 +189,28 @@ No Replit connector — everything Plaid-side is yours to build on Workers:
 
 This is the part with real design risk, and it isn't the AI.
 
+### 5.0 Onboarding: contact verification is required
+
+On Sendblue's **free shared-line plan**, you cannot message an arbitrary number. Each
+recipient must be **verified once**: add them via the Sendblue CLI, then have them text
+your Sendblue number a single time. After that handshake the app can initiate freely.
+
+For two contacts this is a one-time five-minute step, not an ongoing constraint. Two
+consequences for the build:
+
+- **It pairs with the security requirement in §10.** You need to bind `from_number` to a
+  verified user anyway, since `from_number` is the only thing authenticating an inbound
+  reply. Sendblue's verification handshake is a natural place to do that binding.
+- **Free plans use a shared line** — the number your wife texts is shared with other
+  Sendblue customers' apps rather than dedicated to you. Fine for testing whether the loop
+  helps. Worth revisiting **[OPEN]** if this becomes something you both use daily: a
+  dedicated number is a nicer experience and isn't subject to reassignment.
+
+**Check Sendblue's rate limits before Phase 3.** Immediate-send is bursty — several
+transactions can post at once and generate several messages in the same second. Their docs
+have a rate-limit and message-queue page; make sure the send path queues rather than
+fires in parallel.
+
 ### 5.1 The correlation problem
 
 Sendblue inbound webhooks give you `from_number` and `content`. **They do not tell you
@@ -434,18 +456,23 @@ Highest-consequence data you'll ever own.
 | Cloudflare Workers Paid | ~$5/mo (needed for Queues) |
 | D1 | Free tier likely sufficient |
 | Plaid | **$0** on the Trial plan — 3 of 10 Items used (§4.0) |
-| Sendblue | **Verify** — per-message or subscription. Now the largest variable |
+| Sendblue | **$0** on the free shared-line plan — 2 verified contacts (§5.0) |
 | Claude API | Well under $1/mo with the cascade, prompt caching, and Batch API |
+| **Total** | **~$5/mo**, essentially all Cloudflare |
 | **vs Simplifi** | ~$4–6/mo |
 
-Plaid being free on the Trial plan removes what I'd assumed was the dominant cost. The
-remaining question is **Sendblue**, which immediate-send makes volume-sensitive: you'll
-send roughly one message per uncertain transaction plus a confirmation, so per-message
-pricing scales with exactly the behavior you're testing. Price that before Phase 3, and
-note it's the one line item the §5.5 gating thresholds directly control.
+Both external services that I expected to dominate the cost are free at your scale: Plaid's
+Trial plan covers Chase, Discover, and Amex, and Sendblue's free tier covers two verified
+contacts. The entire recurring cost is the $5 Cloudflare Workers Paid plan you need for
+Queues, plus pennies of Claude usage.
 
-If Sendblue lands cheap, this whole thing runs at roughly $5–10/mo and genuinely beats
-Simplifi on price as well as capability.
+That means this genuinely does replace Simplifi at lower cost — which I told you earlier it
+probably wouldn't. The build time is still the real price, and the reason to do it is still
+the loop in §5.
+
+**Where cost would appear later:** outgrowing Plaid's 10-Item cap, moving to a dedicated
+Sendblue number, or opening this up to other households — any of which converts a free tier
+into a paid one.
 
 ---
 
@@ -496,9 +523,7 @@ your numbers match theirs two months running.
    savings goals; only expenses work with cards alone. Linking a checking account is the
    single highest-value thing you can add, and you have 7 free Item slots.
 2. **Budget model** — monthly caps, or zero-based/envelope with rollover? This shapes the
-   schema, so it's worth settling before Phase 0.
-3. **What's your Sendblue pricing?** Immediate-send makes message volume the main cost
-   variable (§11).
+   schema, so it's worth settling before Phase 0. **This is the last thing blocking Phase 0.**
 
 ### Shaping
 5. **"The customer"** — is this just you and your wife, or are you building toward other
