@@ -139,74 +139,120 @@ This is the part with real design risk, and it isn't the AI.
 ### 5.1 The correlation problem
 
 Sendblue inbound webhooks give you `from_number` and `content`. **They do not tell you
-which question the reply answers.** If you sent two questions and get back "lunch with a
-friend," nothing in the payload says which transaction that belongs to.
+which question the reply answers.** Correlation is entirely your job.
 
-Three ways to solve it, in the order I'd apply them:
+Rather than avoid the problem by keeping one question open at a time, lean into it:
+**send a batched digest and resolve many answers from one reply.** One Claude call takes
+the reply plus every open transaction for that number and returns the pairings.
 
-1. **One open question per person at a time.** Default. Others sit in `queued`. A reply is
-   unambiguous because only one question is outstanding. Costs you throughput — if you ask
-   3x/day this is fine; it wouldn't be if you asked about everything.
-2. **LLM disambiguation** when more than one is open. Pass the reply plus all outstanding
-   transactions to Claude and let it pick — "lunch with a friend" obviously matches the
-   $23 restaurant charge, not the $60 gas. This is what makes batching safe later.
-3. **Fall through to intent parsing** when nothing is open. A text that isn't answering
-   anything is either a correction ("actually that Amazon was a gift") or a question
-   ("how much have I spent on food this month?"). Both are worth supporting and both fall
-   out of the same parse step.
+Dedupe every inbound on `message_handle` — Sendblue can redeliver, and a redelivered
+reply must not double-apply.
 
-Dedupe every inbound on `message_handle` — Sendblue can redeliver.
+### 5.2 Digest and batch resolution
 
-### 5.2 Parsing the reply
-
-One Claude call with structured output. Input: the reply text, the transaction, your
-category list with descriptions, and a few similar past transactions. Output:
-`category_id`, `memo`, `confidence`, `is_correction`, `suggested_rule`.
-
-"lunch with a friend" → category `Dining Out`, memo `lunch with a friend`. The memo is
-stored verbatim, because in six months "lunch with a friend" is more useful to you than
-"Dining Out" alone.
-
-Handle the awkward cases explicitly: a reply that answers with a *question*, a reply
-naming a category that doesn't exist, a reply that implies a split ("half groceries half
-booze"), and a reply that's clearly not about money at all.
-
-### 5.3 Message shape
-
-iMessage has no buttons. Plain text only, which is why unstructured replies aren't a
-compromise here — they're the only option, and they happen to be what you want.
+**The digest:**
 
 ```
-💳 $47.83 — THE HIVE MERCANTILE
-Tue Aug 4 · Visa ••4412
+3 charges need categories:
 
-What was this?
+1. $35.00 — WALMART · Tue
+2. $25.00 — STARBUCKS · Tue
+3. $14.00 — MAVERIK · Wed
 ```
 
-Short. No category menu, no reply-format instructions. If a guess is high-confidence but
-below the auto-apply bar, say it ("Guessing: Shopping") so a one-word "yep" works.
+**Any of these replies must work:**
 
-### 5.4 How often to ask — the thing that will kill this feature
+- `walmart was groceries, starbucks was coffee, maverik was gas`
+- `1 groceries 2 coffee 3 gas`
+- `all groceries except maverik was gas`
+- `the big one was groceries, rest was food`
+- `first two were work stuff` *(partial — leaves #3 open)*
+
+Numbering is there as a convenience, not a requirement. The model gets merchant, amount,
+date, and account for every open item, so it can resolve by any attribute you happen to
+use.
+
+**Resolver output** — structured, one call:
+
+```
+matches:      [{ transaction_id, category_id, memo, confidence, source_span }]
+unmatched:    [transaction_id]      // still open, re-ask later
+unresolved:   string                // text that answered nothing
+```
+
+`source_span` records which part of your reply drove each match. Costs nothing to store
+and is what lets you debug a bad pairing months later.
+
+**Four cases the resolver must handle explicitly:**
+
+- **Partial answers.** Apply what was answered, leave the rest open, re-ask only those.
+  Never force a guess to close out a batch.
+- **Duplicate merchants in one batch.** Two Starbucks charges, one "starbucks was coffee":
+  if the answer resolves the same way, apply to both. If you said "the $25 one",
+  amount-match. If it's genuinely ambiguous *and* would resolve differently, send a
+  targeted follow-up instead of guessing.
+- **Out-of-order replies.** You answer yesterday's digest after today's has arrived. Match
+  against **all** open clarifications for that number, not just the newest batch.
+- **Per-match confidence.** A low-confidence pairing does not auto-apply — it goes into
+  the confirmation as a question rather than a statement.
+
+### 5.3 The confirmation message is not optional
+
+One-at-a-time is self-correcting: the question names one charge, so a wrong answer is
+visibly wrong. **Batching removes that.** If the model pairs "coffee" with the Maverik
+charge, the record is wrong, nothing looks broken, and your gas budget quietly drifts.
+
+So every batch resolution sends back:
+
+```
+Got it:
+✓ Walmart $35 → Groceries
+✓ Starbucks $25 → Coffee
+✓ Maverik $14 → Gas
+
+Reply "fix walmart" if I got one wrong.
+```
+
+One extra message, and it turns an invisible error into a two-second correction. A "fix X"
+reply reopens just that transaction.
+
+### 5.4 Parsing individual answers
+
+Within the batch resolver, each answer produces `category_id`, `memo`, `confidence`, and
+`suggested_rule`. The memo is stored **verbatim** — in six months "lunch with a friend" is
+more useful to you than "Dining Out".
+
+Handle the awkward inputs deliberately: a reply that asks a question back, a category name
+that doesn't exist, an implied split ("half groceries half booze"), a correction to an
+already-closed transaction ("actually that Amazon was a gift"), and text that isn't about
+money at all. When nothing is open, a reply falls through to intent parsing — corrections
+and questions like "how much on food this month?" both come out of the same call.
+
+### 5.5 How often to ask
 
 You described asking on **every** new transaction. Two to four cards run **80–150
-transactions a month**. That's 3–5 texts a day, forever, most of them about the same
-Starbucks. The feature dies in week two and takes the app with it.
+transactions a month**. As individual texts that's 3–5 pings a day forever, mostly about
+the same Starbucks, and the feature dies in week two.
 
-What I'd build instead — **[ASSUMED]**, and easy to change since it's all thresholds:
+**Batching changes the math.** Your cost is measured in *messages you answer*, not
+transactions — one digest answered in one sentence is dramatically cheaper than three
+separate exchanges carrying the same information. So the limits can be looser than the
+one-at-a-time design needed:
 
-- **Training mode for the first 2–3 weeks.** Ask aggressively, because every answer writes
-  to `merchant_memory` and you're bootstrapping. High interruption, high value, and you
-  *know* it's temporary.
-- **Then decay to asking only when it matters:** new merchant, low confidence, top-two
-  categories close together, amount well outside the norm for that merchant, or above a
-  dollar floor you set.
-- **Hard caps:** max N questions per person per day (start at 3), quiet hours in their
-  timezone, never ask twice about the same merchant.
-- **Always assign a best guess immediately.** The question *corrects* the record, it
-  doesn't block it. An unanswered text must never leave a transaction uncategorized.
+- **Daily digest [ASSUMED]** at a fixed hour in your timezone, containing everything
+  uncertain since the last one. One message, one reply, one confirmation.
+- **Training mode for the first 2–3 weeks.** Include nearly everything, because each
+  answer seeds `merchant_memory`. High volume, high value, explicitly temporary.
+- **Then decay** to new merchants, low confidence, close top-two categories, amount
+  outliers, or above a dollar floor you set.
+- **Cap digest length** (~10 items). Beyond that, ask about the highest-value and
+  highest-uncertainty ones and send the rest to the dashboard review queue — a 25-item
+  text is not answerable.
+- **Immediate send, bypassing the digest**, only for genuinely urgent items: a very large
+  charge or a possible-fraud signal.
+- **Always assign a best guess immediately.** The digest *corrects* the record; it never
+  blocks it. An unanswered text must never leave a transaction uncategorized.
 - **Time out after 48h**, keep the guess, flag it in the dashboard review queue.
-
-Same mechanism you asked for. Just gated, so it stays livable past month one.
 
 ### 5.5 The compounding loop
 
