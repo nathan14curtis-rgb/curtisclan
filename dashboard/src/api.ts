@@ -54,6 +54,38 @@ export interface Category {
   archived_at: string | null;
 }
 
+export interface Envelope {
+  id: string;
+  household_id: string;
+  category_id: string;
+  group_name: string;
+  monthly_target_cents: number | null;
+  archived_at: string | null;
+}
+
+export interface EnvelopeMonthSummary {
+  month: string;
+  allocatedCents: number;
+  spentCents: number;
+  balanceCents: number;
+}
+
+export interface Transaction {
+  id: string;
+  household_id: string;
+  account_id: string;
+  posted_at: string;
+  amount_cents: number;
+  raw_description: string;
+  normalized_merchant: string | null;
+  category_id: string | null;
+  memo: string | null;
+  pending: 0 | 1;
+  is_transfer: 0 | 1;
+  excluded_from_budget: 0 | 1;
+  source: "plaid" | "csv_import" | "manual";
+}
+
 export interface CsvImportSummary {
   imported: number;
   skippedDuplicates: number;
@@ -76,8 +108,50 @@ export const api = {
   listAccounts: (householdId: string) => request<Account[]>(`/households/${householdId}/accounts`),
   createAccount: (householdId: string, input: { name: string; type: Account["type"]; ownerUserId?: string }) =>
     request<Account>(`/households/${householdId}/accounts`, { method: "POST", body: JSON.stringify(input) }),
+  updateAccount: (householdId: string, accountId: string, input: { name?: string; ownerUserId?: string | null; status?: Account["status"] }) =>
+    request<Account>(`/households/${householdId}/accounts/${accountId}`, { method: "PATCH", body: JSON.stringify(input) }),
 
   listCategories: (householdId: string) => request<Category[]>(`/households/${householdId}/categories`),
+  createCategory: (householdId: string, input: { name: string; kind: Category["kind"]; groupName?: string; monthlyTargetCents?: number }) =>
+    request<{ category: Category; envelope: Envelope | null }>(`/households/${householdId}/categories`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  renameCategory: (householdId: string, categoryId: string, name: string) =>
+    request<Category>(`/households/${householdId}/categories/${categoryId}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  archiveCategory: (householdId: string, categoryId: string) =>
+    request<Category>(`/households/${householdId}/categories/${categoryId}/archive`, { method: "POST" }),
+  unarchiveCategory: (householdId: string, categoryId: string) =>
+    request<Category>(`/households/${householdId}/categories/${categoryId}/unarchive`, { method: "POST" }),
+
+  listEnvelopes: (householdId: string) => request<Envelope[]>(`/households/${householdId}/envelopes`),
+  updateEnvelope: (householdId: string, envelopeId: string, input: { groupName?: string; monthlyTargetCents?: number | null }) =>
+    request<Envelope>(`/households/${householdId}/envelopes/${envelopeId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  getEnvelopeSummary: (householdId: string, envelopeId: string, month: string) =>
+    request<EnvelopeMonthSummary>(`/households/${householdId}/envelopes/${envelopeId}/summary?month=${month}`),
+  allocateToEnvelope: (householdId: string, envelopeId: string, input: { month: string; amountCents: number; note?: string }) =>
+    request<{ ok: true }>(`/households/${householdId}/envelopes/${envelopeId}/allocate`, { method: "POST", body: JSON.stringify(input) }),
+  moveMoneyBetweenEnvelopes: (
+    householdId: string,
+    input: { fromEnvelopeId: string; toEnvelopeId: string; month: string; amountCents: number; note?: string },
+  ) => request<{ ok: true }>(`/households/${householdId}/envelopes/move`, { method: "POST", body: JSON.stringify(input) }),
+
+  listTransactions: (householdId: string, filter: { accountId?: string; categoryId?: string; needsReview?: boolean; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (filter.accountId) params.set("accountId", filter.accountId);
+    if (filter.categoryId) params.set("categoryId", filter.categoryId);
+    if (filter.needsReview) params.set("needsReview", "true");
+    if (filter.limit) params.set("limit", String(filter.limit));
+    const qs = params.toString();
+    return request<Transaction[]>(`/households/${householdId}/transactions${qs ? `?${qs}` : ""}`);
+  },
+  categorizeTransaction: (householdId: string, transactionId: string, input: { categoryId: string; memo?: string }) =>
+    request<Transaction>(`/households/${householdId}/transactions/${transactionId}/categorize`, { method: "PATCH", body: JSON.stringify(input) }),
+  setTransactionExcluded: (householdId: string, transactionId: string, excluded: boolean) =>
+    request<Transaction>(`/households/${householdId}/transactions/${transactionId}/exclude`, {
+      method: "POST",
+      body: JSON.stringify({ excluded }),
+    }),
 
   createLinkToken: (householdId: string, userId: string) =>
     request<{ link_token: string; expiration: string }>(`/households/${householdId}/plaid/link-token`, {
