@@ -1,3 +1,4 @@
+import { describeError } from "../lib/errors";
 import type { MerchantMemory, Rule } from "../types";
 import { DEFAULT_CONFIDENCE_THRESHOLDS, shouldAutoApply, type ConfidenceThresholds } from "./confidence";
 import type { CategoryOption, LlmClassifier, SimilarPastTransaction } from "./llm";
@@ -71,7 +72,7 @@ export async function categorize(txn: CandidateTransaction, ctx: CascadeContext)
     // guess immediately" once a layer actually produces one. Logged
     // (rather than swallowed outright) so a broken LLM layer is visible
     // in Workers Logs instead of silently degrading forever.
-    console.error(`[cascade] LLM layer failed for ${txn.id}:`, err);
+    console.error(`[cascade] LLM layer failed for ${txn.id}: ${describeError(err)}`);
     return { layer: "none", categoryId: null, needsClarification: true };
   }
 }

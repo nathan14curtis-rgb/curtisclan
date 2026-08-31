@@ -1,5 +1,6 @@
 import { categorizeTransaction } from "../categorization/pipeline";
 import { getInboundMessage, markInboundMessageProcessed } from "../db/inboundMessages";
+import { describeError } from "../lib/errors";
 import { processInboundReply } from "../messaging/inboundProcessing";
 import { processSendClarification } from "../messaging/sendClarification";
 import { handleItemWebhook, syncPlaidItem } from "../plaid/sync";
@@ -22,7 +23,8 @@ export async function handleQueueBatch(batch: MessageBatch<TransactionQueueMessa
       }
       message.ack();
     } catch (err) {
-      console.error(`queue job failed (${batch.queue}, ${message.body && (message.body as { type?: string }).type}):`, err);
+      const jobType = message.body && (message.body as { type?: string }).type;
+      console.error(`queue job failed (${batch.queue}, ${jobType}): ${describeError(err)}`);
       message.retry();
     }
   }
