@@ -262,6 +262,7 @@ export function App() {
             householdId={household.id}
             categories={categories}
             envelopes={envelopes}
+            envelopeSummaries={envelopeSummaries}
             transactions={transactions}
             onGoToTransactions={() => changeView("Transactions")}
           />

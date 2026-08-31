@@ -1,6 +1,7 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { api, type Category, type Envelope, type EnvelopeMonthSummary } from "../api";
 import { formatCents } from "../format";
+import { envelopeStatus, STATUS_BADGE_CLASS } from "../envelopeStatus";
 
 interface Props {
   householdId: string;
@@ -10,21 +11,6 @@ interface Props {
   readyToAssignCents: number;
   onChanged: () => Promise<void>;
 }
-
-type EnvelopeStatus = "on track" | "tight" | "over";
-
-function envelopeStatus(envelope: Envelope, summary: EnvelopeMonthSummary | undefined): EnvelopeStatus {
-  if (!summary) return "on track";
-  if (summary.balanceCents < 0) return "over";
-  if (envelope.monthly_target_cents && summary.spentCents >= envelope.monthly_target_cents * 0.85) return "tight";
-  return "on track";
-}
-
-const STATUS_BADGE_CLASS: Record<EnvelopeStatus, string> = {
-  "on track": "badge",
-  tight: "badge badge--warn",
-  over: "badge badge--danger",
-};
 
 export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, readyToAssignCents, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
