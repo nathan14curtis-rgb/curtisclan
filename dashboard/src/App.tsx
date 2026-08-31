@@ -269,6 +269,7 @@ export function App() {
         {activeView === "Transactions" && (
           <TransactionsPage
             householdId={household.id}
+            users={users}
             accounts={accounts}
             categories={categories}
             transactions={transactions}
@@ -278,14 +279,22 @@ export function App() {
         {activeView === "Envelopes" && (
           <EnvelopesPage
             householdId={household.id}
-            title="Envelopes"
-            hint="Every expense and savings category is an envelope — what it's called here is what the text loop calls it too."
             categories={categories}
             envelopes={envelopes}
+            envelopeSummaries={envelopeSummaries}
+            readyToAssignCents={readyToAssignCents}
             onChanged={refreshCategoriesAndEnvelopes}
           />
         )}
-        {activeView === "Bills" && <BillsPage />}
+        {activeView === "Bills" && (
+          <BillsPage
+            householdId={household.id}
+            categories={categories}
+            envelopes={envelopes}
+            envelopeSummaries={envelopeSummaries}
+            onChanged={refreshCategoriesAndEnvelopes}
+          />
+        )}
         {activeView === "Goals" && <GoalsPage />}
         {activeView === "Members" && <MembersPage />}
         {documentCategory && <DocumentsPage category={documentCategory} />}

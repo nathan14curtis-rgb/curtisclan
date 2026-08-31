@@ -1,49 +1,47 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { api, type Category, type Envelope, type EnvelopeMonthSummary } from "../api";
-import { currentMonth, formatCents } from "../format";
+import { formatCents } from "../format";
 
 interface Props {
   householdId: string;
-  title: string;
-  hint: string;
   categories: Category[];
   envelopes: Envelope[];
-  /** When set, only envelopes whose group_name matches (case-insensitive)
-   * show — this is the whole Bills page, reusing this same component
-   * rather than a parallel implementation (see App.tsx). */
-  filterGroup?: string;
+  envelopeSummaries: Record<string, EnvelopeMonthSummary>;
+  readyToAssignCents: number;
   onChanged: () => Promise<void>;
 }
 
-const month = currentMonth();
+type EnvelopeStatus = "on track" | "tight" | "over";
 
-export function EnvelopesPage({ householdId, title, hint, categories, envelopes, filterGroup, onChanged }: Props) {
-  const [summaries, setSummaries] = useState<Record<string, EnvelopeMonthSummary>>({});
+function envelopeStatus(envelope: Envelope, summary: EnvelopeMonthSummary | undefined): EnvelopeStatus {
+  if (!summary) return "on track";
+  if (summary.balanceCents < 0) return "over";
+  if (envelope.monthly_target_cents && summary.spentCents >= envelope.monthly_target_cents * 0.85) return "tight";
+  return "on track";
+}
+
+const STATUS_BADGE_CLASS: Record<EnvelopeStatus, string> = {
+  "on track": "badge",
+  tight: "badge badge--warn",
+  over: "badge badge--danger",
+};
+
+export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, readyToAssignCents, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newKind, setNewKind] = useState<"expense" | "savings">("expense");
-  const [newGroup, setNewGroup] = useState(filterGroup ?? "");
+  const [newGroup, setNewGroup] = useState("");
   const [newTarget, setNewTarget] = useState("");
   const [editing, setEditing] = useState<Record<string, { groupName: string; target: string }>>({});
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
+  const visible = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
 
-  const visible = useMemo(() => {
-    const list = envelopes.filter((e) => !e.archived_at);
-    if (!filterGroup) return list;
-    return list.filter((e) => e.group_name.toLowerCase() === filterGroup.toLowerCase());
-  }, [envelopes, filterGroup]);
-
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all(visible.map((e) => api.getEnvelopeSummary(householdId, e.id, month).then((s) => [e.id, s] as const))).then((pairs) => {
-      if (cancelled) return;
-      setSummaries(Object.fromEntries(pairs));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [householdId, visible]);
+  const allocatedCents = useMemo(() => visible.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [visible]);
+  const needingAttention = useMemo(
+    () => visible.filter((e) => envelopeStatus(e, envelopeSummaries[e.id]) !== "on track").length,
+    [visible, envelopeSummaries],
+  );
 
   const grouped = useMemo(() => {
     const byGroup = new Map<string, Envelope[]>();
@@ -107,80 +105,97 @@ export function EnvelopesPage({ householdId, title, hint, categories, envelopes,
   }
 
   return (
-    <>
-      <h1>{title}</h1>
-      <p className="subtitle">{hint}</p>
+    <div className="section">
+      <div className="grid-3">
+        <div className="card card--emphasis card--padded stat-tile">
+          <span className="label">Allocated</span>
+          <span className="figure">{formatCents(allocatedCents)}</span>
+          <span className="detail">Across {visible.length} envelope{visible.length === 1 ? "" : "s"}.</span>
+        </div>
+        <div className="card card--padded stat-tile">
+          <span className="label">Unassigned</span>
+          <span className="figure">{formatCents(Math.max(0, readyToAssignCents))}</span>
+          <span className="detail">Ready to assign into an envelope.</span>
+        </div>
+        <div className="card card--emphasis card--padded stat-tile">
+          <span className="label">Needs attention</span>
+          <span className="figure">{needingAttention}</span>
+          <span className="detail">Tight or over budget this month.</span>
+        </div>
+      </div>
 
       {grouped.map(([groupName, groupEnvelopes]) => (
-        <div key={groupName}>
+        <div key={groupName} className="section" style={{ gap: 12 }}>
           <p className="envelope-group-heading">{groupName}</p>
-          {groupEnvelopes.map((envelope) => {
-            const category = categoryById.get(envelope.category_id);
-            const summary = summaries[envelope.id];
-            const draft = editing[envelope.id];
-            const pct =
-              envelope.monthly_target_cents && summary ? Math.min(100, Math.max(0, (summary.spentCents / envelope.monthly_target_cents) * 100)) : null;
-            return (
-              <section className="card" key={envelope.id}>
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <strong>{category?.name ?? "Unknown category"}</strong>
-                  {summary && (
-                    <span className={`money ${summary.balanceCents < 0 ? "negative" : "positive"}`}>{formatCents(summary.balanceCents)} left</span>
-                  )}
-                </div>
-                {envelope.monthly_target_cents !== null && summary && (
-                  <>
-                    <p className="hint">
-                      {formatCents(summary.spentCents)} of {formatCents(envelope.monthly_target_cents)} spent this month
-                    </p>
-                    <div className="progress-track">
-                      <div className={`progress-fill ${pct !== null && pct >= 100 ? "over" : ""}`} style={{ width: `${pct ?? 0}%` }} />
-                    </div>
-                  </>
-                )}
-
-                {draft ? (
-                  <div className="row" style={{ marginTop: "0.75rem" }}>
-                    <input
-                      type="text"
-                      placeholder="Group"
-                      value={draft.groupName}
-                      onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, groupName: e.target.value } }))}
-                      style={{ width: 120 }}
-                    />
-                    <input
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="Monthly target $"
-                      value={draft.target}
-                      onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, target: e.target.value } }))}
-                      style={{ width: 130 }}
-                    />
-                    <button className="secondary" onClick={() => saveEdit(envelope.id)}>
-                      Save
-                    </button>
-                  </div>
-                ) : (
-                  <div className="row" style={{ marginTop: "0.75rem" }}>
-                    <button className="secondary" onClick={() => startEdit(envelope)}>
-                      Edit
-                    </button>
-                    {category && (
-                      <button className="danger" onClick={() => archive(category.id)}>
-                        Archive
-                      </button>
+          <div className="row-list">
+            {groupEnvelopes.map((envelope, i) => {
+              const category = categoryById.get(envelope.category_id);
+              const summary = envelopeSummaries[envelope.id];
+              const draft = editing[envelope.id];
+              const status = envelopeStatus(envelope, summary);
+              const pct = envelope.monthly_target_cents && summary ? Math.min(100, Math.max(0, (summary.spentCents / envelope.monthly_target_cents) * 100)) : null;
+              return (
+                <div className="row-item" key={envelope.id} style={i ? undefined : {}}>
+                  <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                    <span className="row-title">{category?.name ?? "Unknown category"}</span>
+                    {envelope.monthly_target_cents !== null && summary && (
+                      <span className="row-meta">
+                        {formatCents(summary.spentCents)} of {formatCents(envelope.monthly_target_cents)} spent
+                      </span>
                     )}
                   </div>
-                )}
-              </section>
-            );
-          })}
+                  <span className={STATUS_BADGE_CLASS[status]}>{status}</span>
+                  {summary && <span className={`money ${summary.balanceCents < 0 ? "negative" : "positive"}`}>{formatCents(summary.balanceCents)} left</span>}
+                  {pct !== null && (
+                    <div style={{ width: 96, flex: "0 0 auto" }}>
+                      <div className="progress-track">
+                        <div className={`progress-fill ${pct >= 100 ? "over" : ""}`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {draft ? (
+                    <div className="row" style={{ flex: "0 0 auto" }}>
+                      <input
+                        type="text"
+                        placeholder="Group"
+                        value={draft.groupName}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, groupName: e.target.value } }))}
+                        style={{ width: 100 }}
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        placeholder="Target $"
+                        value={draft.target}
+                        onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, target: e.target.value } }))}
+                        style={{ width: 90 }}
+                      />
+                      <button className="secondary" onClick={() => saveEdit(envelope.id)}>
+                        Save
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="row" style={{ flex: "0 0 auto" }}>
+                      <button className="secondary" onClick={() => startEdit(envelope)}>
+                        Edit
+                      </button>
+                      {category && (
+                        <button className="danger" onClick={() => archive(category.id)}>
+                          Archive
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       ))}
       {visible.length === 0 && <p className="hint">Nothing here yet — add one below.</p>}
 
-      <section className="card">
-        <h2>{filterGroup ? `Add a ${filterGroup.toLowerCase().replace(/s$/, "")}` : "Add a category"}</h2>
+      <section className="card card--padded">
+        <h2>Add a category</h2>
         <form onSubmit={addCategory}>
           <div className="row">
             <input type="text" placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} required style={{ flex: 1 }} />
@@ -205,6 +220,6 @@ export function EnvelopesPage({ householdId, title, hint, categories, envelopes,
       </section>
 
       {error && <p className="error">{error}</p>}
-    </>
+    </div>
   );
 }
