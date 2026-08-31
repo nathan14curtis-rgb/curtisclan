@@ -41,7 +41,7 @@ async function handleTransactionQueueMessage(msg: TransactionQueueMessage, env: 
       await handleItemWebhook(env, msg.householdId, msg.plaidItemId, msg.webhookCode);
       return;
     case "categorize":
-      await categorizeTransaction(env, msg.householdId, msg.transactionId);
+      await categorizeTransaction(env, msg.householdId, msg.transactionId, { skipClarification: msg.skipClarification });
       return;
     case "resolve_reply": {
       const inbound = await getInboundMessage(env.DB, msg.inboundMessageId);

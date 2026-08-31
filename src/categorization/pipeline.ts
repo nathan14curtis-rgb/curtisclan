@@ -34,8 +34,20 @@ function buildQuestionText(amountCents: number, merchant: string | null, rawDesc
  * any) and asks — the 'categorize' queue job's handler. Idempotent: a
  * redelivered job for an already-categorized transaction, or one with an
  * open clarification already sent, is a no-op.
+ *
+ * `skipClarification` (set for a newly-linked item's historical backfill,
+ * src/plaid/sync.ts) still runs the full cascade — rules, merchant
+ * memory, and the LLM all still apply — it only suppresses the last
+ * resort: never text a household member about a transaction from before
+ * they linked the account. An unresolved one is left uncategorized for
+ * the dashboard's review queue instead of an iMessage.
  */
-export async function categorizeTransaction(env: Env, householdId: string, transactionId: string): Promise<void> {
+export async function categorizeTransaction(
+  env: Env,
+  householdId: string,
+  transactionId: string,
+  opts: { skipClarification?: boolean } = {},
+): Promise<void> {
   const transaction = await getTransaction(env.DB, householdId, transactionId);
   if (transaction.is_transfer || transaction.category_id) return;
 
@@ -92,6 +104,11 @@ export async function categorizeTransaction(env: Env, householdId: string, trans
   }
 
   if (!result.needsClarification) return;
+
+  if (opts.skipClarification) {
+    console.log(`[categorize] ${transactionId} needs clarification but is from a historical backfill — leaving for dashboard review, not texting`);
+    return;
+  }
 
   const alreadyOpen = await getLatestClarificationForTransaction(env.DB, householdId, transactionId);
   if (alreadyOpen && alreadyOpen.status === "sent") {

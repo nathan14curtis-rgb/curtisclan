@@ -244,6 +244,40 @@ describe("categorizeTransaction pipeline", () => {
     expect(clarification?.user_id).toBe(nathan.id);
   });
 
+  it("skipClarification leaves an unmatched transaction uncategorized without ever texting anyone", async () => {
+    const { household, checking } = await seedHousehold();
+    const txn = await createTransaction(db, household.id, {
+      accountId: checking.id, postedAt: "2025-01-15", amountCents: -2200, rawDescription: "THE HIVE MERCANTILE", normalizedMerchant: "THE HIVE MERCANTILE",
+    });
+
+    // The Plaid-backfill case (src/plaid/sync.ts): categorization still
+    // runs, but nothing needing a human guess should ever create a
+    // clarification, since that's what would text someone about a
+    // transaction from before they linked their card.
+    await categorizeTransaction(env, household.id, txn.id, { skipClarification: true });
+
+    const updated = await getTransaction(db, household.id, txn.id);
+    expect(updated.category_id).toBeNull();
+    expect(await getLatestClarificationForTransaction(db, household.id, txn.id)).toBeNull();
+    expect(await listOpenClarificationsForHousehold(db, household.id)).toHaveLength(0);
+  });
+
+  it("skipClarification still applies a confident rule/memory match — it only suppresses asking", async () => {
+    const { household, checking, groceries } = await seedHousehold();
+    await createRule(db, household.id, {
+      conditions: { field: "merchant", op: "contains", value: "walmart" },
+      actions: [{ type: "setCategory", categoryId: groceries.id }],
+    });
+    const txn = await createTransaction(db, household.id, {
+      accountId: checking.id, postedAt: "2025-01-15", amountCents: -4500, rawDescription: "WALMART", normalizedMerchant: "WALMART",
+    });
+
+    await categorizeTransaction(env, household.id, txn.id, { skipClarification: true });
+
+    const updated = await getTransaction(db, household.id, txn.id);
+    expect(updated.category_id).toBe(groceries.id);
+  });
+
   it("is idempotent — a redelivered job for an already-categorized transaction is a no-op", async () => {
     const { household, checking, groceries } = await seedHousehold();
     const txn = await createTransaction(db, household.id, {

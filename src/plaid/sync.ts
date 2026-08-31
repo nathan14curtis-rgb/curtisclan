@@ -137,6 +137,22 @@ async function applyPlaidTransaction(
   return { transactionId: created.id, accountId: account.id, amountCents, postedAt: plaidTxn.date, isNew: true };
 }
 
+/**
+ * A null cursor means this item has never synced before — Plaid's first
+ * /transactions/sync response for a brand-new item is a historical
+ * backfill (often 12-24 months, PLAN.md §4.2), not a stream of live
+ * charges. Every transaction from that call, however many pages it takes,
+ * is backfill; a later sync (cursor already set) is the real thing.
+ * Getting this wrong means texting someone individually about every
+ * unrecognized transaction from the last two years the moment they link a
+ * card — pulled out as its own named, tested predicate for exactly that
+ * reason, rather than an inline comparison easy to flip by accident in a
+ * future refactor.
+ */
+export function isInitialPlaidSync(cursorAtSyncStart: string | null): boolean {
+  return cursorAtSyncStart === null;
+}
+
 /** Runs one full /transactions/sync cycle for an item — every page until
  * has_more is false, persisting the cursor after each page so a crash
  * mid-sync resumes rather than re-processing from scratch (PLAN.md §4.2). */
@@ -147,6 +163,10 @@ export async function syncPlaidItem(env: Env, householdId: string, plaidItemId: 
   const item = await getPlaidItemByPlaidId(env.DB, plaidItemId);
   if (!item || item.household_id !== householdId || item.status !== "active") return;
   const accessToken = await getPlaidAccessToken(item, encryptionKey);
+
+  // Captured once, up front — the loop below reassigns the local `cursor`
+  // variable as it pages, so `item.cursor` is only reliable here.
+  const isInitialSync = isInitialPlaidSync(item.cursor);
 
   let cursor = item.cursor;
   let hasMore = true;
@@ -167,7 +187,12 @@ export async function syncPlaidItem(env: Env, householdId: string, plaidItemId: 
       });
 
       if (!isTransfer && applied.isNew) {
-        const message: TransactionQueueMessage = { type: "categorize", householdId, transactionId: applied.transactionId };
+        const message: TransactionQueueMessage = {
+          type: "categorize",
+          householdId,
+          transactionId: applied.transactionId,
+          skipClarification: isInitialSync,
+        };
         await env.TRANSACTION_QUEUE.send(message);
       }
     }
