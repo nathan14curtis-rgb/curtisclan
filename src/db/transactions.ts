@@ -190,6 +190,20 @@ export async function applyCategorization(
   return { ...existing, category_id: input.categoryId, memo: input.memo ?? existing.memo, updated_at: now };
 }
 
+/** Excludes a transaction from every envelope-balance/spend total without
+ * touching its category — for a reimbursed purchase, a transfer the
+ * transfer-detector missed, or anything else that shouldn't count against
+ * the budget but is still worth keeping on the books. */
+export async function setTransactionExcluded(db: D1Database, householdId: string, id: string, excluded: boolean): Promise<Transaction> {
+  const now = nowIso();
+  const result = await db
+    .prepare(`UPDATE "transaction" SET excluded_from_budget = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(excluded ? 1 : 0, now, id, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", id);
+  return getTransaction(db, householdId, id);
+}
+
 /** Costco is groceries + household + a gift — splits are child rows, not a
  * forced single category (PLAN.md §3). The parent stays as the original
  * transaction (excluded from budget totals by the caller once split) and

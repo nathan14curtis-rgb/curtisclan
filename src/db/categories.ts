@@ -1,7 +1,8 @@
 import { newId } from "../lib/id";
 import { DEFAULT_CATEGORIES } from "../lib/defaultCategories";
 import type { Category, CategoryKind, Envelope } from "../types";
-import { getScoped, listScoped, nowIso } from "./client";
+import { getScoped, listScoped, NotFoundError, nowIso } from "./client";
+import { archiveEnvelopeForCategory, unarchiveEnvelopeForCategory } from "./envelopes";
 
 export async function listCategories(db: D1Database, householdId: string): Promise<Category[]> {
   return listScoped<Category>(db, "category", householdId, "sort_order, name");
@@ -81,6 +82,44 @@ export async function createEnvelopeForCategory(
     created_at: now,
     updated_at: now,
   };
+}
+
+/** Rename only — kind is fixed at creation (changing it would orphan the
+ * envelope/no-envelope relationship the dashboard and cascade both rely
+ * on), so editing that means archiving this category and creating a new
+ * one instead. */
+export async function renameCategory(db: D1Database, householdId: string, id: string, name: string): Promise<Category> {
+  const now = nowIso();
+  const result = await db
+    .prepare(`UPDATE category SET name = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(name, now, id, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("category", id);
+  return getCategory(db, householdId, id);
+}
+
+/** Archive, never delete (historical transactions reference it) — hides it
+ * from the taxonomy the categorization cascade and dashboard offer, but a
+ * transaction already filed under it keeps working. Archives its envelope
+ * too, since one can't be archived without the other going stale. */
+export async function archiveCategory(db: D1Database, householdId: string, id: string): Promise<Category> {
+  const category = await getCategory(db, householdId, id);
+  const now = nowIso();
+  await db.prepare(`UPDATE category SET archived_at = ?, updated_at = ? WHERE id = ? AND household_id = ?`).bind(now, now, id, householdId).run();
+  if (category.kind === "expense" || category.kind === "savings") {
+    await archiveEnvelopeForCategory(db, householdId, id);
+  }
+  return { ...category, archived_at: now, updated_at: now };
+}
+
+export async function unarchiveCategory(db: D1Database, householdId: string, id: string): Promise<Category> {
+  const category = await getCategory(db, householdId, id);
+  const now = nowIso();
+  await db.prepare(`UPDATE category SET archived_at = NULL, updated_at = ? WHERE id = ? AND household_id = ?`).bind(now, id, householdId).run();
+  if (category.kind === "expense" || category.kind === "savings") {
+    await unarchiveEnvelopeForCategory(db, householdId, id);
+  }
+  return { ...category, archived_at: null, updated_at: now };
 }
 
 export async function seedDefaultCategories(db: D1Database, householdId: string): Promise<void> {

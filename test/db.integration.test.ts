@@ -2,10 +2,10 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { createHousehold } from "../src/db/households";
 import { createUser, verifyUserPhone } from "../src/db/users";
-import { createAccount } from "../src/db/accounts";
-import { listCategories } from "../src/db/categories";
-import { listEnvelopes, allocateToEnvelope, moveMoneyBetweenEnvelopes, getEnvelopeMonthSummary } from "../src/db/envelopes";
-import { applyCategorization, createTransaction, splitTransaction, listTransactions } from "../src/db/transactions";
+import { createAccount, updateAccount } from "../src/db/accounts";
+import { archiveCategory, listCategories, renameCategory, unarchiveCategory } from "../src/db/categories";
+import { listEnvelopes, allocateToEnvelope, moveMoneyBetweenEnvelopes, getEnvelopeMonthSummary, updateEnvelope } from "../src/db/envelopes";
+import { applyCategorization, createTransaction, splitTransaction, listTransactions, setTransactionExcluded } from "../src/db/transactions";
 import { listClassifications } from "../src/db/classifications";
 import { getMerchantMemory } from "../src/db/merchantMemory";
 import { importCsvTransactions } from "../src/db/csvImport";
@@ -241,5 +241,80 @@ describe("CSV import", () => {
 
     const transactions = await listTransactions(db, household.id, { accountId: account.id });
     expect(transactions).toHaveLength(2);
+  });
+});
+
+describe("category/envelope/account editing (dashboard CRUD)", () => {
+  it("renames a category", async () => {
+    const { household, groceries } = await seedHousehold();
+    const renamed = await renameCategory(db, household.id, groceries.id, "Food & Groceries");
+    expect(renamed.name).toBe("Food & Groceries");
+  });
+
+  it("archiving a category archives its envelope too, and unarchiving reverses both", async () => {
+    const { household, groceries } = await seedHousehold();
+    const envelopeBefore = (await listEnvelopes(db, household.id)).find((e) => e.category_id === groceries.id)!;
+    expect(envelopeBefore.archived_at).toBeNull();
+
+    const archived = await archiveCategory(db, household.id, groceries.id);
+    expect(archived.archived_at).not.toBeNull();
+    const envelopeAfterArchive = (await listEnvelopes(db, household.id)).find((e) => e.category_id === groceries.id)!;
+    expect(envelopeAfterArchive.archived_at).not.toBeNull();
+
+    const restored = await unarchiveCategory(db, household.id, groceries.id);
+    expect(restored.archived_at).toBeNull();
+    const envelopeAfterRestore = (await listEnvelopes(db, household.id)).find((e) => e.category_id === groceries.id)!;
+    expect(envelopeAfterRestore.archived_at).toBeNull();
+  });
+
+  it("regroups an envelope (e.g. into 'Bills') without touching its target when omitted", async () => {
+    const { household, groceries } = await seedHousehold();
+    const envelope = (await listEnvelopes(db, household.id)).find((e) => e.category_id === groceries.id)!;
+    await updateEnvelope(db, household.id, envelope.id, { monthlyTargetCents: 50000 });
+
+    const regrouped = await updateEnvelope(db, household.id, envelope.id, { groupName: "Bills" });
+    expect(regrouped.group_name).toBe("Bills");
+    expect(regrouped.monthly_target_cents).toBe(50000); // untouched — key was omitted, not null
+
+    const cleared = await updateEnvelope(db, household.id, envelope.id, { monthlyTargetCents: null });
+    expect(cleared.monthly_target_cents).toBeNull();
+    expect(cleared.group_name).toBe("Bills"); // still untouched
+  });
+
+  it("reassigns an account's owner, including clearing it for a joint account, and can mark it removed", async () => {
+    const { household, account, nathan } = await seedHousehold();
+    const wife = await createUser(db, household.id, { name: "Wife" });
+
+    const reassigned = await updateAccount(db, household.id, account.id, { ownerUserId: wife.id });
+    expect(reassigned.owner_user_id).toBe(wife.id);
+
+    const renamed = await updateAccount(db, household.id, account.id, { name: "Joint Checking" });
+    expect(renamed.name).toBe("Joint Checking");
+    expect(renamed.owner_user_id).toBe(wife.id); // untouched — key was omitted
+
+    const cleared = await updateAccount(db, household.id, account.id, { ownerUserId: null });
+    expect(cleared.owner_user_id).toBeNull();
+
+    const removed = await updateAccount(db, household.id, account.id, { status: "removed" });
+    expect(removed.status).toBe("removed");
+    expect(nathan.id).toBeTruthy(); // seeded owner, unused after reassignment above
+  });
+
+  it("toggles a transaction's excluded_from_budget flag without touching its category", async () => {
+    const { household, account, groceries } = await seedHousehold();
+    const txn = await createTransaction(db, household.id, {
+      accountId: account.id,
+      postedAt: "2026-03-01",
+      amountCents: -2000,
+      rawDescription: "Reimbursed lunch",
+    });
+    await applyCategorization(db, household.id, txn.id, { categoryId: groceries.id, method: "human" });
+
+    const excluded = await setTransactionExcluded(db, household.id, txn.id, true);
+    expect(excluded.excluded_from_budget).toBe(1);
+    expect(excluded.category_id).toBe(groceries.id);
+
+    const included = await setTransactionExcluded(db, household.id, txn.id, false);
+    expect(included.excluded_from_budget).toBe(0);
   });
 });

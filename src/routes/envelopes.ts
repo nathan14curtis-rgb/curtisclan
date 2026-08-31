@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { Env } from "../types";
-import { allocateToEnvelope, getEnvelopeMonthSummary, listEnvelopes, moveMoneyBetweenEnvelopes } from "../db/envelopes";
+import { allocateToEnvelope, getEnvelopeMonthSummary, listEnvelopes, moveMoneyBetweenEnvelopes, updateEnvelope } from "../db/envelopes";
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
 
@@ -10,6 +10,15 @@ export const envelopesRoute = new Hono<{ Bindings: Env }>();
 envelopesRoute.get("/", async (c) => {
   const envelopes = await listEnvelopes(c.env.DB, requireParam(c, "householdId"));
   return c.json(envelopes);
+});
+
+// group_name (which powers the dashboard's Bills view — an envelope
+// grouped "Bills" instead of, say, "Everyday") and monthly_target_cents
+// are the two things worth editing about an envelope after creation.
+envelopesRoute.patch("/:envelopeId", async (c) => {
+  const body = await c.req.json<{ groupName?: string; monthlyTargetCents?: number | null }>();
+  const envelope = await updateEnvelope(c.env.DB, requireParam(c, "householdId"), requireParam(c, "envelopeId"), body);
+  return c.json(envelope);
 });
 
 envelopesRoute.get("/:envelopeId/summary", async (c) => {
