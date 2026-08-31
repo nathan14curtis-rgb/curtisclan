@@ -54,7 +54,10 @@ function buildTool(categories: CategoryOption[]): Anthropic.Tool {
       type: "object" as const,
       properties: {
         category_id: { type: "string", enum: categoryIds },
-        confidence: { type: "number", minimum: 0, maximum: 1 },
+        // Anthropic's strict/custom tool schemas reject `minimum`/`maximum`
+        // on number properties — the [0, 1] range is enforced by the
+        // prompt instructions instead (buildSystemPrompt below).
+        confidence: { type: "number" },
         reasoning: { type: "string" },
         alternatives: {
           type: "array",
@@ -63,7 +66,7 @@ function buildTool(categories: CategoryOption[]): Anthropic.Tool {
             type: "object",
             properties: {
               category_id: { type: "string", enum: categoryIds },
-              confidence: { type: "number", minimum: 0, maximum: 1 },
+              confidence: { type: "number" },
             },
             required: ["category_id", "confidence"],
             additionalProperties: false,

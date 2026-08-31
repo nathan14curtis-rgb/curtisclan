@@ -18,6 +18,7 @@ beforeEach(() => {
   Object.assign(env, {
     SENDBLUE_API_KEY_ID: "test-key-id",
     SENDBLUE_API_SECRET_KEY: "test-secret-key",
+    SENDBLUE_FROM_NUMBER: "+15555550100",
     SENDBLUE_API_BASE_URL: "https://fake.sendblue.test/api",
   });
 });
@@ -69,7 +70,7 @@ describe("sendToHouseholdGroup", () => {
     await sendToHouseholdGroup(env, household.id, "second message");
 
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body).toEqual({ group_id: "grp_abc", content: "second message" });
+    expect(body).toEqual({ group_id: "grp_abc", content: "second message", from_number: "+15555550100" });
   });
 
   it("does nothing when nobody in the household has a verified phone", async () => {

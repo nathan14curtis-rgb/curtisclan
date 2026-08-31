@@ -7,6 +7,7 @@ import type { SendGroupMessageResponse, SendMessageResponse } from "./types";
 export interface SendblueConfig {
   apiKeyId: string;
   apiSecretKey: string;
+  fromNumber: string;
   baseUrl: string; // default https://api.sendblue.com/api
 }
 
@@ -31,6 +32,7 @@ export async function sendMessage(
     body: JSON.stringify({
       number: input.to,
       content: input.content,
+      from_number: config.fromNumber,
       status_callback: input.statusCallbackUrl,
     }),
   });
@@ -51,7 +53,9 @@ export async function sendGroupMessage(
   input: { numbers: string[]; content: string } | { groupId: string; content: string },
 ): Promise<SendGroupMessageResponse> {
   const body =
-    "groupId" in input ? { group_id: input.groupId, content: input.content } : { numbers: input.numbers, content: input.content };
+    "groupId" in input
+      ? { group_id: input.groupId, content: input.content, from_number: config.fromNumber }
+      : { numbers: input.numbers, content: input.content, from_number: config.fromNumber };
 
   const response = await fetch(`${config.baseUrl}/send-group-message`, {
     method: "POST",

@@ -222,6 +222,7 @@ export interface Env {
   SENDBLUE_API_KEY_ID?: string;
   SENDBLUE_API_SECRET_KEY?: string;
   SENDBLUE_SIGNING_SECRET?: string;
+  SENDBLUE_FROM_NUMBER?: string; // the Sendblue-assigned number to send from — required by their API
   SENDBLUE_API_BASE_URL?: string; // default https://api.sendblue.com/api
   ANTHROPIC_API_KEY?: string;
 }

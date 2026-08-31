@@ -27,6 +27,7 @@ export function getSendblueConfig(env: Env): SendblueConfig {
   return {
     apiKeyId: requireSecret(env, "SENDBLUE_API_KEY_ID"),
     apiSecretKey: requireSecret(env, "SENDBLUE_API_SECRET_KEY"),
+    fromNumber: requireSecret(env, "SENDBLUE_FROM_NUMBER"),
     baseUrl: env.SENDBLUE_API_BASE_URL ?? "https://api.sendblue.com/api",
   };
 }
