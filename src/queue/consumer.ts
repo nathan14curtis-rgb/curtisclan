@@ -29,6 +29,7 @@ export async function handleQueueBatch(batch: MessageBatch<TransactionQueueMessa
 }
 
 async function handleTransactionQueueMessage(msg: TransactionQueueMessage, env: Env): Promise<void> {
+  console.log(`[queue] transaction: ${msg.type}`, msg);
   switch (msg.type) {
     case "plaid_sync":
       await syncPlaidItem(env, msg.householdId, msg.plaidItemId);
@@ -50,6 +51,7 @@ async function handleTransactionQueueMessage(msg: TransactionQueueMessage, env: 
 }
 
 async function handleMessageQueueMessage(msg: MessageQueueMessage, env: Env): Promise<void> {
+  console.log(`[queue] message: ${msg.type}`, msg);
   switch (msg.type) {
     case "send_clarification":
       await processSendClarification(env, msg.householdId, msg.clarificationId, async (delaySeconds) => {
