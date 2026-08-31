@@ -51,6 +51,14 @@ export async function listActivePlaidItems(db: D1Database): Promise<PlaidItem[]>
   return results;
 }
 
+export async function listActivePlaidItemsForHousehold(db: D1Database, householdId: string): Promise<PlaidItem[]> {
+  const { results } = await db
+    .prepare(`SELECT * FROM plaid_item WHERE household_id = ? AND status = 'active'`)
+    .bind(householdId)
+    .all<PlaidItem>();
+  return results;
+}
+
 export async function getPlaidAccessToken(item: PlaidItem, encryptionKey: CryptoKey): Promise<string> {
   const encrypted: EncryptedValue = { ciphertext: item.access_token_ciphertext, iv: item.access_token_iv };
   return decryptSecret(encrypted, encryptionKey);

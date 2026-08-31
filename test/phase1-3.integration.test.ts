@@ -10,7 +10,7 @@ import {
   reactivateAccountsForItem,
   updateAccountBalance,
 } from "../src/db/accounts";
-import { createPlaidItem, getPlaidAccessToken, getPlaidItemByPlaidId, listActivePlaidItems, setPlaidItemStatus, updateSyncCursor } from "../src/db/plaidItems";
+import { createPlaidItem, getPlaidAccessToken, getPlaidItemByPlaidId, listActivePlaidItems, listActivePlaidItemsForHousehold, setPlaidItemStatus, updateSyncCursor } from "../src/db/plaidItems";
 import { listCategories } from "../src/db/categories";
 import { createTransaction, getTransaction } from "../src/db/transactions";
 import { detectAndMarkTransfer } from "../src/db/transfers";
@@ -76,6 +76,17 @@ describe("plaid_item", () => {
     await setPlaidItemStatus(db, "item-cursor", "login_required");
     const activeAfter = await listActivePlaidItems(db);
     expect(activeAfter.some((i) => i.plaid_item_id === "item-cursor")).toBe(false);
+  });
+
+  it("scopes the active-items list to one household", async () => {
+    const { household } = await seedHousehold();
+    const otherHousehold = await createHousehold(db, { name: "Other Household" });
+    const key = await testEncryptionKey();
+    await createPlaidItem(db, household.id, { plaidItemId: "item-mine", accessToken: "t" }, key);
+    await createPlaidItem(db, otherHousehold.id, { plaidItemId: "item-theirs", accessToken: "t" }, key);
+
+    const mine = await listActivePlaidItemsForHousehold(db, household.id);
+    expect(mine.map((i) => i.plaid_item_id)).toEqual(["item-mine"]);
   });
 });
 
