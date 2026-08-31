@@ -56,7 +56,10 @@ function buildTool(openItems: OpenClarificationItem[], categories: CategoryOptio
               transaction_id: { type: "string", enum: transactionIds },
               category_id: { type: "string", enum: categoryIds },
               memo: { type: "string", description: "The verbatim (or lightly cleaned) memo for this transaction from the reply." },
-              confidence: { type: "number", minimum: 0, maximum: 1 },
+              // No minimum/maximum — Anthropic's strict/custom tools
+              // reject numeric range constraints (src/categorization/llm.ts
+              // hit the same 400 first). Range is prompt-enforced instead.
+              confidence: { type: "number" },
               source_span: { type: "string", description: "The part of the reply text that drove this specific pairing." },
             },
             required: ["transaction_id", "category_id", "memo", "confidence", "source_span"],

@@ -28,7 +28,7 @@ export interface ConfidenceThresholds {
 }
 
 export const DEFAULT_CONFIDENCE_THRESHOLDS: ConfidenceThresholds = {
-  minConfidence: 0.75,
+  minConfidence: 0.9,
   minTopTwoMargin: 0.15,
   novelMerchantPenalty: 0.1,
 };

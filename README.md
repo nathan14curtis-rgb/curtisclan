@@ -155,6 +155,7 @@ npm run typecheck # tsc --noEmit
 
    npx wrangler secret put SENDBLUE_API_KEY_ID
    npx wrangler secret put SENDBLUE_API_SECRET_KEY
+   npx wrangler secret put SENDBLUE_FROM_NUMBER      # your Sendblue-assigned number — required by their API on every send
    npx wrangler secret put SENDBLUE_SIGNING_SECRET   # set when you create the Sendblue webhook, step 5 below
 
    npx wrangler secret put ANTHROPIC_API_KEY

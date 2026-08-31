@@ -4,6 +4,7 @@ import { api, type Account, type CsvImportSummary } from "../api";
 interface Props {
   householdId: string;
   accounts: Account[];
+  onChanged: () => Promise<void>;
 }
 
 type MappedField = "date" | "description" | "amount" | "category" | "memo";
@@ -45,7 +46,7 @@ const MAPPED_FIELDS: MappedField[] = ["date", "description", "amount", "category
  * file's own header row rather than assumed, since the real Simplifi
  * export format is data only the household has.
  */
-export function ImportSection({ householdId, accounts }: Props) {
+export function ImportSection({ householdId, accounts, onChanged }: Props) {
   const [accountId, setAccountId] = useState("");
   const [csvText, setCsvText] = useState("");
   const [fileName, setFileName] = useState("");
@@ -108,6 +109,7 @@ export function ImportSection({ householdId, accounts }: Props) {
         },
       });
       setSummary(result);
+      await onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
     } finally {

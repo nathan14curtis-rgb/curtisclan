@@ -8,4 +8,6 @@ export type TransactionQueueMessage =
   | { type: "categorize"; householdId: string; transactionId: string }
   | { type: "resolve_reply"; householdId: string; userId: string; inboundMessageId: string };
 
-export type MessageQueueMessage = { type: "send_clarification"; householdId: string; clarificationId: string };
+export type MessageQueueMessage =
+  | { type: "send_clarification"; householdId: string; clarificationId: string }
+  | { type: "daily_digest"; householdId: string };

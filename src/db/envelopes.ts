@@ -10,6 +10,47 @@ export async function getEnvelope(db: D1Database, householdId: string, id: strin
   return getScoped<Envelope>(db, "envelope", householdId, id);
 }
 
+export async function getEnvelopeByCategory(db: D1Database, householdId: string, categoryId: string): Promise<Envelope | null> {
+  return db.prepare(`SELECT * FROM envelope WHERE household_id = ? AND category_id = ?`).bind(householdId, categoryId).first<Envelope>();
+}
+
+/** Regrouping (e.g. into a "Bills" group_name for the dashboard's Bills
+ * view) and adjusting the monthly target — the two things about an
+ * envelope itself, as opposed to its category's name, that are worth
+ * editing after creation. */
+export async function updateEnvelope(
+  db: D1Database,
+  householdId: string,
+  id: string,
+  input: { groupName?: string; monthlyTargetCents?: number | null },
+): Promise<Envelope> {
+  const existing = await getEnvelope(db, householdId, id);
+  const groupName = input.groupName ?? existing.group_name;
+  // Distinguish "omitted" (leave as-is) from "explicitly null" (clear the
+  // target) — a plain `?? existing` can't tell those apart.
+  const monthlyTargetCents = "monthlyTargetCents" in input ? (input.monthlyTargetCents ?? null) : existing.monthly_target_cents;
+  const now = nowIso();
+  await db
+    .prepare(`UPDATE envelope SET group_name = ?, monthly_target_cents = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(groupName, monthlyTargetCents, now, id, householdId)
+    .run();
+  return { ...existing, group_name: groupName, monthly_target_cents: monthlyTargetCents, updated_at: now };
+}
+
+export async function archiveEnvelopeForCategory(db: D1Database, householdId: string, categoryId: string): Promise<void> {
+  await db
+    .prepare(`UPDATE envelope SET archived_at = ?, updated_at = ? WHERE household_id = ? AND category_id = ?`)
+    .bind(nowIso(), nowIso(), householdId, categoryId)
+    .run();
+}
+
+export async function unarchiveEnvelopeForCategory(db: D1Database, householdId: string, categoryId: string): Promise<void> {
+  await db
+    .prepare(`UPDATE envelope SET archived_at = NULL, updated_at = ? WHERE household_id = ? AND category_id = ?`)
+    .bind(nowIso(), householdId, categoryId)
+    .run();
+}
+
 async function insertAllocation(
   db: D1Database,
   householdId: string,

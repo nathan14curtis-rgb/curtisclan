@@ -1,10 +1,16 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { HAIKU_MODEL } from "../categorization/llm";
 import type { MessageQueueMessage } from "../lib/queueMessages";
-import type { Env } from "../types";
+import type { Category, Env, Transaction } from "../types";
 import { createClarification, listOpenClarificationsForHousehold, markClarificationAnswered } from "../db/clarifications";
 import { listCategories } from "../db/categories";
-import { applyCategorization, findRecentTransactionByMerchantSubstring, getTransaction } from "../db/transactions";
+import { getEnvelopeByCategory, getEnvelopeMonthSummary } from "../db/envelopes";
+import {
+  applyCategorization,
+  findRecentTransactionByMerchantSubstring,
+  getTransaction,
+  listRecentlyCategorizedTransactions,
+} from "../db/transactions";
 import { sendToHouseholdGroup } from "./groupChat";
 import { resolveReply, type OpenClarificationItem } from "./replyResolver";
 
@@ -12,52 +18,82 @@ const FIX_PATTERN = /^\s*fix\s+(.+)$/i;
 // A low-confidence pairing does not auto-apply — it stays open rather
 // than risk a silent misfile (PLAN.md §5.3).
 const MIN_MATCH_CONFIDENCE = 0.55;
+// How far back a reply can reach to correct something without saying
+// "fix" — wide enough to cover "the digest arrived, then a reply an hour
+// later," narrow enough that a months-old transaction never gets swept up
+// by an unrelated merchant name.
+const RECENT_CORRECTION_WINDOW_HOURS = 48;
+
+interface AppliedCorrection {
+  merchant: string;
+  amountCents: number;
+  categoryName: string;
+  remainingCents: number | null; // null when the category has no envelope
+}
 
 /**
  * Handles one inbound Sendblue text (PLAN.md §5.2–§5.4): "fix X"
  * corrections first, then the batch resolver against every open
- * clarification for the household's shared group thread — either spouse
- * can answer anything open, not just charges nominally addressed to them.
+ * clarification *and* every recently auto-categorized transaction for the
+ * household's shared group thread — either spouse can answer or correct
+ * anything recent, not just what's nominally still open. This is what
+ * makes a daily-digest reply like "actually the uber was for business"
+ * work without a rigid "fix <merchant>" syntax: the digest's own
+ * transactions are exactly this same recently-categorized pool.
  * `userId` (who actually sent this text) is used only for attribution
  * (transaction_classification.created_by_user_id). Intent parsing for
  * "nothing open" replies (Q&A like "how much on food this month?") is
  * PLAN.md §13 Q13 — still an open decision, not built here; such a reply
  * is left unresolved rather than guessed at.
  */
-export async function processInboundReply(env: Env, householdId: string, userId: string, content: string): Promise<void> {
+export async function processInboundReply(env: Env, householdId: string, userId: string, content: string, anthropicClient?: Anthropic): Promise<void> {
   const fixMatch = content.match(FIX_PATTERN);
   if (fixMatch?.[1]) {
     await handleFixCommand(env, householdId, userId, fixMatch[1].trim());
     return;
   }
 
-  const open = await listOpenClarificationsForHousehold(env.DB, householdId);
-  if (open.length === 0) return;
-  if (!env.ANTHROPIC_API_KEY) return; // leaves clarifications open for the next reply once configured
+  const since = new Date(Date.now() - RECENT_CORRECTION_WINDOW_HOURS * 60 * 60 * 1000).toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+  const [open, recent] = await Promise.all([
+    listOpenClarificationsForHousehold(env.DB, householdId),
+    listRecentlyCategorizedTransactions(env.DB, householdId, since),
+  ]);
+  if (open.length === 0 && recent.length === 0) return;
+  if (!env.ANTHROPIC_API_KEY) return; // leaves everything as-is for the next reply once configured
 
-  const transactions = await Promise.all(open.map((c) => getTransaction(env.DB, householdId, c.transaction_id)));
-  const openItems: OpenClarificationItem[] = transactions.map((t) => ({
+  const openTransactions = await Promise.all(open.map((c) => getTransaction(env.DB, householdId, c.transaction_id)));
+
+  // Dedup by transaction id — a transaction can carry both a low-confidence
+  // guess (so it's already categorized) and an open clarification asking
+  // to confirm it. Either representation is fine as a resolveReply
+  // candidate; what matters is not asking Claude to match the same id twice.
+  const transactionsById = new Map<string, Transaction>();
+  for (const t of recent) transactionsById.set(t.id, t);
+  for (const t of openTransactions) transactionsById.set(t.id, t);
+  const allTransactions = [...transactionsById.values()];
+
+  const candidateItems: OpenClarificationItem[] = allTransactions.map((t) => ({
     transactionId: t.id,
     merchant: t.normalized_merchant ?? t.raw_description,
     amountCents: t.amount_cents,
     postedAt: t.posted_at,
   }));
 
-  const categories = (await listCategories(env.DB, householdId))
-    .filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings"))
-    .map((c) => ({ id: c.id, name: c.name }));
+  const categories = (await listCategories(env.DB, householdId)).filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings"));
+  const categoryOptions = categories.map((c) => ({ id: c.id, name: c.name }));
 
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const result = await resolveReply(client, HAIKU_MODEL, { replyText: content, openItems, categories });
+  const client = anthropicClient ?? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+  const result = await resolveReply(client, HAIKU_MODEL, { replyText: content, openItems: candidateItems, categories: categoryOptions });
 
   const clarificationByTransactionId = new Map(open.map((c) => [c.transaction_id, c]));
-  const applied: Array<{ merchant: string; amountCents: number; categoryName: string }> = [];
+  const categoryById = new Map(categories.map((c) => [c.id, c]));
+  const applied: AppliedCorrection[] = [];
 
   for (const match of result.matches) {
     if (match.confidence < MIN_MATCH_CONFIDENCE) continue;
-    const clarification = clarificationByTransactionId.get(match.transactionId);
-    const category = categories.find((c) => c.id === match.categoryId);
-    if (!clarification || !category) continue;
+    const category = categoryById.get(match.categoryId);
+    const txn = transactionsById.get(match.transactionId);
+    if (!category || !txn) continue;
 
     await applyCategorization(env.DB, householdId, match.transactionId, {
       categoryId: match.categoryId,
@@ -65,10 +101,16 @@ export async function processInboundReply(env: Env, householdId: string, userId:
       method: "human",
       createdByUserId: userId,
     });
-    await markClarificationAnswered(env.DB, clarification.id);
 
-    const txn = transactions.find((t) => t.id === match.transactionId);
-    if (txn) applied.push({ merchant: txn.normalized_merchant ?? txn.raw_description, amountCents: txn.amount_cents, categoryName: category.name });
+    const clarification = clarificationByTransactionId.get(match.transactionId);
+    if (clarification) await markClarificationAnswered(env.DB, clarification.id);
+
+    applied.push({
+      merchant: txn.normalized_merchant ?? txn.raw_description,
+      amountCents: txn.amount_cents,
+      categoryName: category.name,
+      remainingCents: await remainingThisMonth(env, householdId, category),
+    });
   }
 
   if (applied.length === 0) return;
@@ -79,9 +121,30 @@ export async function processInboundReply(env: Env, householdId: string, userId:
   await sendToHouseholdGroup(env, householdId, buildConfirmationText(applied));
 }
 
-function buildConfirmationText(applied: Array<{ merchant: string; amountCents: number; categoryName: string }>): string {
-  const lines = applied.map((a) => `✓ ${a.merchant} $${(Math.abs(a.amountCents) / 100).toFixed(2)} → ${a.categoryName}`);
-  return ["Got it:", ...lines, "", 'Reply "fix <merchant>" if I got one wrong.'].join("\n");
+/** The envelope's running balance through the current month — "how much
+ * is actually still safe to spend," per this app's carryover model
+ * (PLAN.md §8), not just this month's allocation minus this month's
+ * spend. Null only if the category somehow has no envelope. */
+async function remainingThisMonth(env: Env, householdId: string, category: Category): Promise<number | null> {
+  const envelope = await getEnvelopeByCategory(env.DB, householdId, category.id);
+  if (!envelope) return null;
+  const month = new Date().toISOString().slice(0, 7);
+  const summary = await getEnvelopeMonthSummary(env.DB, householdId, envelope.id, month);
+  return summary.balanceCents;
+}
+
+function formatRemaining(remainingCents: number): string {
+  const dollars = (Math.abs(remainingCents) / 100).toLocaleString("en-US", { maximumFractionDigits: 0 });
+  return remainingCents < 0 ? `over by $${dollars}` : `$${dollars} left`;
+}
+
+function buildConfirmationText(applied: AppliedCorrection[]): string {
+  const lines = applied.map((a) => {
+    const amount = `$${(Math.abs(a.amountCents) / 100).toFixed(2)}`;
+    const remaining = a.remainingCents === null ? "" : ` — ${formatRemaining(a.remainingCents)} this month`;
+    return `Confirmed! ${amount} at ${a.merchant} matched to ${a.categoryName}${remaining}`;
+  });
+  return [...lines, "", 'Reply "fix <merchant>" if I got one wrong.'].join("\n");
 }
 
 async function handleFixCommand(env: Env, householdId: string, userId: string, merchantText: string): Promise<void> {

@@ -21,7 +21,7 @@ describe("shouldAutoApply", () => {
   });
 
   it("requires extra confidence for a novel merchant", () => {
-    const borderline = { categoryId: "cat_dining", confidence: 0.8, alternatives: [{ categoryId: "cat_other", confidence: 0.1 }] };
+    const borderline = { categoryId: "cat_dining", confidence: 0.93, alternatives: [{ categoryId: "cat_other", confidence: 0.1 }] };
     expect(shouldAutoApply(borderline, { merchantIsNovel: false })).toBe(true);
     expect(shouldAutoApply(borderline, { merchantIsNovel: true })).toBe(false);
   });

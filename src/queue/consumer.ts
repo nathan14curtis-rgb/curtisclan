@@ -1,5 +1,7 @@
 import { categorizeTransaction } from "../categorization/pipeline";
 import { getInboundMessage, markInboundMessageProcessed } from "../db/inboundMessages";
+import { describeError } from "../lib/errors";
+import { sendDailyDigest } from "../messaging/dailyDigest";
 import { processInboundReply } from "../messaging/inboundProcessing";
 import { processSendClarification } from "../messaging/sendClarification";
 import { handleItemWebhook, syncPlaidItem } from "../plaid/sync";
@@ -22,7 +24,8 @@ export async function handleQueueBatch(batch: MessageBatch<TransactionQueueMessa
       }
       message.ack();
     } catch (err) {
-      console.error(`queue job failed (${batch.queue}, ${message.body && (message.body as { type?: string }).type}):`, err);
+      const jobType = message.body && (message.body as { type?: string }).type;
+      console.error(`queue job failed (${batch.queue}, ${jobType}): ${describeError(err)}`);
       message.retry();
     }
   }
@@ -57,6 +60,9 @@ async function handleMessageQueueMessage(msg: MessageQueueMessage, env: Env): Pr
       await processSendClarification(env, msg.householdId, msg.clarificationId, async (delaySeconds) => {
         await env.MESSAGE_QUEUE.send(msg, { delaySeconds });
       });
+      return;
+    case "daily_digest":
+      await sendDailyDigest(env, msg.householdId);
       return;
   }
 }

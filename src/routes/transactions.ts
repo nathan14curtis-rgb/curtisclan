@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { Env } from "../types";
-import { applyCategorization, getTransaction, listTransactions, splitTransaction } from "../db/transactions";
+import { applyCategorization, getTransaction, listTransactions, setTransactionExcluded, splitTransaction } from "../db/transactions";
 import { listClassifications } from "../db/classifications";
 import { categorizeTransaction } from "../categorization/pipeline";
 
@@ -58,6 +58,16 @@ transactionsRoute.post("/:transactionId/recategorize", async (c) => {
   const transactionId = requireParam(c, "transactionId");
   await categorizeTransaction(c.env, householdId, transactionId);
   const transaction = await getTransaction(c.env.DB, householdId, transactionId);
+  return c.json(transaction);
+});
+
+// A dashboard toggle, not a categorization — for a reimbursed purchase, a
+// transfer the auto-detector missed, or anything else that shouldn't
+// count against a budget without also erasing its category.
+transactionsRoute.post("/:transactionId/exclude", async (c) => {
+  const body = await c.req.json<{ excluded?: boolean }>();
+  if (typeof body.excluded !== "boolean") return c.json({ error: "excluded must be a boolean" }, 400);
+  const transaction = await setTransactionExcluded(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), body.excluded);
   return c.json(transaction);
 });
 

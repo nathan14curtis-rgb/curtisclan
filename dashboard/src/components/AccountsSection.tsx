@@ -68,6 +68,36 @@ export function AccountsSection({ householdId, users, accounts, onChanged }: Pro
   const [error, setError] = useState<string | null>(null);
   const [manualName, setManualName] = useState("");
   const [manualType, setManualType] = useState<Account["type"]>("depository_checking");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editOwnerId, setEditOwnerId] = useState("");
+
+  function startEdit(a: Account) {
+    setEditingId(a.id);
+    setEditName(a.name);
+    setEditOwnerId(a.owner_user_id ?? "");
+  }
+
+  async function saveEdit(accountId: string) {
+    setError(null);
+    try {
+      await api.updateAccount(householdId, accountId, { name: editName.trim(), ownerUserId: editOwnerId || null });
+      setEditingId(null);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update account");
+    }
+  }
+
+  async function remove(accountId: string) {
+    setError(null);
+    try {
+      await api.updateAccount(householdId, accountId, { status: "removed" });
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to remove account");
+    }
+  }
 
   useEffect(() => {
     setLinkingAsUserId((prev) => (prev && users.some((u) => u.id === prev) ? prev : users[0]?.id ?? ""));
@@ -127,19 +157,58 @@ export function AccountsSection({ householdId, users, accounts, onChanged }: Pro
     <section className="card">
       <h2>Bank accounts</h2>
       <ul className="list">
-        {accounts.map((a) => {
-          const status = statusLabel(a.status);
-          return (
-            <li key={a.id}>
-              <span>
-                {a.name}
-                {a.mask ? ` ····${a.mask}` : ""}
-              </span>
-              <span className={status.className}>{status.text}</span>
-            </li>
-          );
-        })}
-        {accounts.length === 0 && (
+        {accounts
+          .filter((a) => a.status !== "removed")
+          .map((a) => {
+            const status = statusLabel(a.status);
+            const owner = users.find((u) => u.id === a.owner_user_id);
+            if (editingId === a.id) {
+              return (
+                <li key={a.id} style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+                  <span className="row" style={{ flex: 1 }}>
+                    <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} style={{ width: 160 }} />
+                    <select value={editOwnerId} onChange={(e) => setEditOwnerId(e.target.value)}>
+                      <option value="">Joint / no owner</option>
+                      {users.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                  <span className="row">
+                    <button className="secondary" onClick={() => saveEdit(a.id)}>
+                      Save
+                    </button>
+                    <button className="secondary" onClick={() => setEditingId(null)}>
+                      Cancel
+                    </button>
+                  </span>
+                </li>
+              );
+            }
+            return (
+              <li key={a.id}>
+                <span>
+                  {a.name}
+                  {a.mask ? ` ····${a.mask}` : ""}
+                  {owner && <span className="hint"> — {owner.name}</span>}
+                </span>
+                <span className="row">
+                  <span className={status.className}>{status.text}</span>
+                  <button className="secondary" onClick={() => startEdit(a)}>
+                    Edit
+                  </button>
+                  {!a.plaid_item_id && (
+                    <button className="danger" onClick={() => remove(a.id)}>
+                      Remove
+                    </button>
+                  )}
+                </span>
+              </li>
+            );
+          })}
+        {accounts.filter((a) => a.status !== "removed").length === 0 && (
           <li>
             <span className="hint">No accounts yet.</span>
           </li>

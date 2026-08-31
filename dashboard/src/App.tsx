@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, type Account, type Household, type User } from "./api";
-import { PeopleSection } from "./components/PeopleSection";
-import { AccountsSection } from "./components/AccountsSection";
-import { ImportSection } from "./components/ImportSection";
+import { api, type Account, type Category, type Envelope, type Household, type Transaction, type User } from "./api";
+import { Nav, type Tab } from "./components/Nav";
+import { HomePage } from "./components/HomePage";
+import { TransactionsPage } from "./components/TransactionsPage";
+import { EnvelopesPage } from "./components/EnvelopesPage";
+import { SettingsPage } from "./components/SettingsPage";
 
 const STORAGE_KEY = "curtisclan.householdId";
 
@@ -11,12 +13,17 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newHouseholdName, setNewHouseholdName] = useState("");
+  const [tab, setTab] = useState<Tab>("home");
 
-  // Shared here (not fetched independently per section) so that, e.g.,
-  // adding a person in PeopleSection immediately unblocks the "link a
-  // bank account" picker in AccountsSection without a page reload.
+  // Shared here (not fetched independently per page) so an edit on one
+  // page — e.g. adding a category on Envelopes — is immediately visible
+  // everywhere else (Bills, Transactions' category dropdown) without a
+  // page reload, the same reasoning the People/Accounts lift already used.
   const [users, setUsers] = useState<User[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   useEffect(() => {
     const id = localStorage.getItem(STORAGE_KEY);
@@ -41,10 +48,35 @@ export function App() {
     setAccounts(await api.listAccounts(household.id));
   }, [household]);
 
+  const refreshCategories = useCallback(async () => {
+    if (!household) return;
+    setCategories(await api.listCategories(household.id));
+  }, [household]);
+
+  const refreshEnvelopes = useCallback(async () => {
+    if (!household) return;
+    setEnvelopes(await api.listEnvelopes(household.id));
+  }, [household]);
+
+  const refreshTransactions = useCallback(async () => {
+    if (!household) return;
+    setTransactions(await api.listTransactions(household.id, { limit: 200 }));
+  }, [household]);
+
   useEffect(() => {
     refreshUsers();
     refreshAccounts();
-  }, [refreshUsers, refreshAccounts]);
+    refreshCategories();
+    refreshEnvelopes();
+    refreshTransactions();
+  }, [refreshUsers, refreshAccounts, refreshCategories, refreshEnvelopes, refreshTransactions]);
+
+  // Adding a category creates its envelope in the same request (see
+  // src/routes/categories.ts) — refresh both so a new envelope shows up
+  // immediately instead of only after the next unrelated envelope edit.
+  const refreshCategoriesAndEnvelopes = useCallback(async () => {
+    await Promise.all([refreshCategories(), refreshEnvelopes()]);
+  }, [refreshCategories, refreshEnvelopes]);
 
   async function createHousehold(e: FormEvent) {
     e.preventDefault();
@@ -87,11 +119,58 @@ export function App() {
 
   return (
     <>
-      <h1>{household.name}</h1>
-      <p className="subtitle">People, bank accounts, and importing your history.</p>
-      <PeopleSection householdId={household.id} users={users} onChanged={refreshUsers} />
-      <AccountsSection householdId={household.id} users={users} accounts={accounts} onChanged={refreshAccounts} />
-      <ImportSection householdId={household.id} accounts={accounts} />
+      <Nav active={tab} onChange={setTab} />
+      {tab === "home" && (
+        <HomePage
+          householdId={household.id}
+          categories={categories}
+          envelopes={envelopes}
+          transactions={transactions}
+          onGoToTransactions={() => setTab("transactions")}
+        />
+      )}
+      {tab === "transactions" && (
+        <TransactionsPage
+          householdId={household.id}
+          accounts={accounts}
+          categories={categories}
+          transactions={transactions}
+          onChanged={refreshTransactions}
+        />
+      )}
+      {tab === "envelopes" && (
+        <EnvelopesPage
+          householdId={household.id}
+          title="Envelopes"
+          hint="Every expense and savings category is an envelope — what it's called here is what the text loop calls it too."
+          categories={categories}
+          envelopes={envelopes}
+          onChanged={refreshCategoriesAndEnvelopes}
+        />
+      )}
+      {tab === "bills" && (
+        <EnvelopesPage
+          householdId={household.id}
+          title="Bills"
+          hint={'Envelopes grouped "Bills" — recurring obligations, at a glance. Add one below, or regroup an existing envelope into "Bills" from the Envelopes page.'}
+          categories={categories}
+          envelopes={envelopes}
+          filterGroup="Bills"
+          onChanged={refreshCategoriesAndEnvelopes}
+        />
+      )}
+      {tab === "settings" && (
+        <SettingsPage
+          householdId={household.id}
+          users={users}
+          accounts={accounts}
+          categories={categories}
+          onUsersChanged={refreshUsers}
+          onAccountsChanged={refreshAccounts}
+          onCategoriesChanged={refreshCategoriesAndEnvelopes}
+          onTransactionsChanged={refreshTransactions}
+        />
+      )}
     </>
   );
 }

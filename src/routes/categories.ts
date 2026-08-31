@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { CategoryKind, Env } from "../types";
-import { createCategory, createEnvelopeForCategory, listCategories } from "../db/categories";
+import { archiveCategory, createCategory, createEnvelopeForCategory, listCategories, renameCategory, unarchiveCategory } from "../db/categories";
 
 const CATEGORY_KINDS: CategoryKind[] = ["expense", "income", "savings", "transfer"];
 
@@ -44,4 +44,23 @@ categoriesRoute.post("/", async (c) => {
   }
 
   return c.json({ category, envelope: null }, 201);
+});
+
+// Rename only — kind can't change after creation (renameCategory's doc
+// comment explains why); use archive + create-new for that.
+categoriesRoute.patch("/:categoryId", async (c) => {
+  const body = await c.req.json<{ name?: string }>();
+  if (!body.name) return c.json({ error: "name is required" }, 400);
+  const category = await renameCategory(c.env.DB, requireParam(c, "householdId"), requireParam(c, "categoryId"), body.name);
+  return c.json(category);
+});
+
+categoriesRoute.post("/:categoryId/archive", async (c) => {
+  const category = await archiveCategory(c.env.DB, requireParam(c, "householdId"), requireParam(c, "categoryId"));
+  return c.json(category);
+});
+
+categoriesRoute.post("/:categoryId/unarchive", async (c) => {
+  const category = await unarchiveCategory(c.env.DB, requireParam(c, "householdId"), requireParam(c, "categoryId"));
+  return c.json(category);
 });

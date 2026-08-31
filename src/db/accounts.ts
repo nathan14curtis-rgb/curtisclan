@@ -1,5 +1,5 @@
 import { newId } from "../lib/id";
-import type { Account, AccountType } from "../types";
+import type { Account, AccountStatus, AccountType } from "../types";
 import { getScoped, listScoped, nowIso } from "./client";
 
 export async function listAccounts(db: D1Database, householdId: string): Promise<Account[]> {
@@ -64,6 +64,29 @@ export async function createAccount(
     created_at: now,
     updated_at: now,
   };
+}
+
+/** Rename, reassign the card's owner (including to nobody, for a joint
+ * account), or mark it 'removed' — the dashboard settings surface for an
+ * account that isn't Plaid-linked/re-link management (that's the sandbox
+ * fire-webhook / Link flow instead). `ownerUserId: null` clears the owner;
+ * omitting it leaves the current owner untouched. */
+export async function updateAccount(
+  db: D1Database,
+  householdId: string,
+  id: string,
+  input: { name?: string; ownerUserId?: string | null; status?: AccountStatus },
+): Promise<Account> {
+  const existing = await getAccount(db, householdId, id);
+  const name = input.name ?? existing.name;
+  const ownerUserId = "ownerUserId" in input ? (input.ownerUserId ?? null) : existing.owner_user_id;
+  const status = input.status ?? existing.status;
+  const now = nowIso();
+  await db
+    .prepare(`UPDATE account SET name = ?, owner_user_id = ?, status = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(name, ownerUserId, status, now, id, householdId)
+    .run();
+  return { ...existing, name, owner_user_id: ownerUserId, status, updated_at: now };
 }
 
 /** Refreshed on every sync — feeds the Ready-to-Assign credit-card
