@@ -99,10 +99,11 @@ npm install
 
 ```
 npx wrangler d1 migrations apply curtisclan --local   # creates the local SQLite DB
-npm run build:dashboard                                 # builds dashboard/dist once
 npm run dev                                             # wrangler dev, http://localhost:8787
 ```
 
+`npm run dev` builds `dashboard/dist` for you automatically (via
+`wrangler.jsonc`'s `build.command`) before starting the dev server.
 `GET /health` confirms the Worker is up; `/` serves the dashboard. From
 the terminal instead:
 
@@ -160,14 +161,13 @@ npm run typecheck # tsc --noEmit
    ```
 4. **Deploy:**
    ```
-   npm run deploy   # builds dashboard/dist, then wrangler deploy
+   npm run deploy
    ```
-   If you're deploying via Cloudflare's **Workers Builds** Git integration
-   rather than running this locally, its configured *Build command*
-   (Cloudflare dashboard → your Worker → Settings → Builds) needs to run
-   `npm run build:dashboard` before `wrangler deploy` — a plain
-   `wrangler deploy` alone won't build the dashboard first, since
-   `wrangler` only uploads whatever's already sitting in `dashboard/dist`.
+   `wrangler.jsonc`'s `build.command` (`npm run build:dashboard`) runs
+   automatically as part of `wrangler dev`/`wrangler deploy` — including
+   inside Cloudflare's **Workers Builds** Git integration, since that also
+   just runs `wrangler deploy` under the hood. No separate "Build command"
+   setting needed in the Cloudflare dashboard.
 5. **Register webhooks** against your deployed Worker URL:
    - **Plaid**: nothing to register up front — `POST /:householdId/plaid/link-token`
      sets the webhook URL per-item automatically to

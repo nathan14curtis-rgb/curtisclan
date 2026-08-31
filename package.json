@@ -8,7 +8,7 @@
     "postinstall": "wrangler types || true",
     "dev": "wrangler dev",
     "build:dashboard": "npm --prefix dashboard install && npm --prefix dashboard run build",
-    "deploy": "npm run build:dashboard && wrangler deploy",
+    "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

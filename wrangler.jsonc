@@ -43,13 +43,20 @@
     "ENVIRONMENT": "development"
   },
 
-  // Dashboard (PLAN §9), built separately with `npm run build:dashboard`
-  // (see README) into dashboard/dist. Static files matching a request are
-  // served directly; anything that doesn't match (/api/*, /webhooks/*,
-  // /health) falls through to this Worker.
+  // Dashboard (PLAN §9), built into dashboard/dist. Static files matching
+  // a request are served directly; anything that doesn't match
+  // (/api/*, /webhooks/*, /health) falls through to this Worker.
   "assets": {
     "binding": "ASSETS",
     "directory": "./dashboard/dist"
+  },
+
+  // Wrangler runs this itself before dev/deploy — including inside
+  // Cloudflare's Workers Builds Git integration, since that also just
+  // runs `wrangler deploy` — so dashboard/dist is always fresh without a
+  // separately configured "Build command" in the Cloudflare dashboard.
+  "build": {
+    "command": "npm run build:dashboard"
   }
 
   // Secrets (Plaid client id/secret, Sendblue keys, Anthropic key, token
