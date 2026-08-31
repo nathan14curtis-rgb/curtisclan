@@ -171,6 +171,11 @@ export const api = {
     request<Account>(`/households/${householdId}/accounts`, { method: "POST", body: JSON.stringify(input) }),
   updateAccount: (householdId: string, accountId: string, input: { name?: string; ownerUserId?: string | null; status?: Account["status"] }) =>
     request<Account>(`/households/${householdId}/accounts/${accountId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  unlinkAccount: (householdId: string, accountId: string, deleteTransactions: boolean) =>
+    request<{ ok: true; transactionsDeleted: number }>(`/households/${householdId}/accounts/${accountId}/unlink`, {
+      method: "POST",
+      body: JSON.stringify({ deleteTransactions }),
+    }),
 
   listCategories: (householdId: string) => request<Category[]>(`/households/${householdId}/categories`),
   createCategory: (

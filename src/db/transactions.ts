@@ -454,3 +454,29 @@ export async function removeTransactionByPlaidTxnId(db: D1Database, householdId:
     db.prepare(`DELETE FROM "transaction" WHERE id = ?`).bind(existing.id),
   ]);
 }
+
+/**
+ * Wipes every transaction on one account, with its audit/clarification
+ * children — the "delete transactions" half of unlinking an account
+ * (src/plaid/unlink.ts). Unlike removeTransactionByPlaidTxnId (a single
+ * row Plaid tells us is gone), this is a deliberate bulk purge the caller
+ * asked for explicitly, e.g. clearing out a Sandbox-linked test account's
+ * fake history before linking the real one. Returns the count deleted so
+ * the caller can report it back.
+ */
+export async function deleteTransactionsForAccount(db: D1Database, householdId: string, accountId: string): Promise<number> {
+  const { results } = await db
+    .prepare(`SELECT id FROM "transaction" WHERE household_id = ? AND account_id = ?`)
+    .bind(householdId, accountId)
+    .all<{ id: string }>();
+  if (results.length === 0) return 0;
+
+  const ids = results.map((r) => r.id);
+  const placeholders = ids.map(() => "?").join(",");
+  await db.batch([
+    db.prepare(`DELETE FROM transaction_classification WHERE transaction_id IN (${placeholders})`).bind(...ids),
+    db.prepare(`DELETE FROM clarification WHERE transaction_id IN (${placeholders})`).bind(...ids),
+    db.prepare(`DELETE FROM "transaction" WHERE id IN (${placeholders})`).bind(...ids),
+  ]);
+  return ids.length;
+}

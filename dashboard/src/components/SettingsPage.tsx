@@ -21,7 +21,7 @@ export function SettingsPage({ householdId, users, accounts, categories, onUsers
   return (
     <div className="section">
       <PeopleSection householdId={householdId} users={users} onChanged={onUsersChanged} />
-      <AccountsSection householdId={householdId} users={users} accounts={accounts} onChanged={onAccountsChanged} />
+      <AccountsSection householdId={householdId} users={users} accounts={accounts} onChanged={onAccountsChanged} onTransactionsChanged={onTransactionsChanged} />
       <CategoriesSection householdId={householdId} categories={categories} onChanged={onCategoriesChanged} />
       <ImportSection householdId={householdId} accounts={accounts} onChanged={onTransactionsChanged} />
     </div>
