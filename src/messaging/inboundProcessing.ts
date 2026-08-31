@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { HAIKU_MODEL } from "../categorization/llm";
+import { describeError } from "../lib/errors";
 import type { MessageQueueMessage } from "../lib/queueMessages";
 import type { Category, Env, Transaction } from "../types";
 import { createClarification, listOpenClarificationsForHousehold, markClarificationAnswered } from "../db/clarifications";
@@ -12,7 +13,7 @@ import {
   listRecentlyCategorizedTransactions,
 } from "../db/transactions";
 import { sendToHouseholdGroup } from "./groupChat";
-import { resolveReply, type OpenClarificationItem } from "./replyResolver";
+import { resolveReply, type OpenClarificationItem, type ReplyResolverResult } from "./replyResolver";
 
 const FIX_PATTERN = /^\s*fix\s+(.+)$/i;
 // A low-confidence pairing does not auto-apply — it stays open rather
@@ -59,7 +60,16 @@ export async function processInboundReply(env: Env, householdId: string, userId:
     listRecentlyCategorizedTransactions(env.DB, householdId, since),
   ]);
   if (open.length === 0 && recent.length === 0) return;
-  if (!env.ANTHROPIC_API_KEY) return; // leaves everything as-is for the next reply once configured
+
+  if (!env.ANTHROPIC_API_KEY) {
+    // A silent no-op here reads to the person on the other end as their
+    // reply vanishing — PLAN.md §5.3's "the confirmation message is not
+    // optional" applies just as much to "I can't process this yet" as it
+    // does to a successful match.
+    console.error(`[inboundReply] ANTHROPIC_API_KEY not configured — cannot resolve reply for household ${householdId}`);
+    await sendToHouseholdGroup(env, householdId, "Got your reply, but I can't match it to a charge yet — that part isn't set up. You can still categorize from the dashboard.");
+    return;
+  }
 
   const openTransactions = await Promise.all(open.map((c) => getTransaction(env.DB, householdId, c.transaction_id)));
 
@@ -83,7 +93,19 @@ export async function processInboundReply(env: Env, householdId: string, userId:
   const categoryOptions = categories.map((c) => ({ id: c.id, name: c.name }));
 
   const client = anthropicClient ?? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const result = await resolveReply(client, HAIKU_MODEL, { replyText: content, openItems: candidateItems, categories: categoryOptions });
+  let result: ReplyResolverResult;
+  try {
+    result = await resolveReply(client, HAIKU_MODEL, { replyText: content, openItems: candidateItems, categories: categoryOptions });
+  } catch (err) {
+    // Previously this threw all the way out to the queue consumer, which
+    // retries silently and, once retries are exhausted, drops the job —
+    // the reply is gone with no signal to the person who sent it that
+    // anything went wrong at all. Fail loud to them instead; a transient
+    // error is cheap for them to recover from by just replying again.
+    console.error(`[inboundReply] resolveReply failed for household ${householdId}: ${describeError(err)}`);
+    await sendToHouseholdGroup(env, householdId, "Got your reply, but hit a hiccup matching it — try again in a bit, or categorize it from the dashboard.");
+    return;
+  }
 
   const clarificationByTransactionId = new Map(open.map((c) => [c.transaction_id, c]));
   const categoryById = new Map(categories.map((c) => [c.id, c]));
@@ -113,7 +135,15 @@ export async function processInboundReply(env: Env, householdId: string, userId:
     });
   }
 
-  if (applied.length === 0) return;
+  if (applied.length === 0) {
+    // Claude ran and genuinely found nothing to apply — every candidate
+    // was either unmatched or below MIN_MATCH_CONFIDENCE. Still not a
+    // silent outcome: the person sent a real reply and deserves to know
+    // it didn't land, not just wonder why nothing changed.
+    console.log(`[inboundReply] household ${householdId}: no confident matches (${result.matches.length} candidate match(es), all below threshold or unresolved)`);
+    await sendToHouseholdGroup(env, householdId, "Got your reply, but couldn't match it confidently to a specific charge — check the dashboard to categorize it manually.");
+    return;
+  }
 
   // The confirmation message is not optional (PLAN.md §5.3): batching
   // removes the self-correcting property of one-at-a-time asks, so every
