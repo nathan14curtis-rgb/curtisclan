@@ -209,6 +209,7 @@ export interface Env {
   DB: D1Database;
   TRANSACTION_QUEUE: Queue;
   MESSAGE_QUEUE: Queue;
+  ASSETS: Fetcher; // dashboard/dist, served by the platform — unused directly in Worker code
   ENVIRONMENT: string;
 
   // Workers Secrets (wrangler secret put <NAME>) — see README for the
