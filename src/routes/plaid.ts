@@ -3,8 +3,8 @@ import { requireParam } from "../lib/http";
 import { getEncryptionKey, getPlaidConfig } from "../lib/secrets";
 import type { TransactionQueueMessage } from "../lib/queueMessages";
 import type { Env } from "../types";
-import { createLinkToken, exchangePublicToken } from "../plaid/client";
-import { createPlaidItem } from "../db/plaidItems";
+import { createLinkToken, exchangePublicToken, sandboxFireWebhook } from "../plaid/client";
+import { createPlaidItem, getPlaidAccessToken, listActivePlaidItemsForHousehold } from "../db/plaidItems";
 
 export const plaidRoute = new Hono<{ Bindings: Env }>();
 
@@ -48,4 +48,29 @@ plaidRoute.post("/exchange-token", async (c) => {
   await c.env.TRANSACTION_QUEUE.send(message);
 
   return c.json({ itemId: item_id }, 201);
+});
+
+/**
+ * Sandbox-only test helper: fires Plaid's SYNC_UPDATES_AVAILABLE webhook
+ * for every linked item, which makes Plaid inject new fake transaction(s)
+ * and immediately send the real TRANSACTIONS webhook back to this Worker —
+ * the exact same path (verify → queue → /transactions/sync → categorize →
+ * clarification) a real charge takes, without spending real money.
+ */
+plaidRoute.post("/sandbox/fire-webhook", async (c) => {
+  const householdId = requireParam(c, "householdId");
+  const plaidConfig = getPlaidConfig(c.env);
+  if (plaidConfig.env !== "sandbox") {
+    return c.json({ error: "only available when PLAID_ENV is sandbox" }, 403);
+  }
+
+  const items = await listActivePlaidItemsForHousehold(c.env.DB, householdId);
+  if (items.length === 0) return c.json({ error: "no linked accounts for this household" }, 404);
+
+  const encryptionKey = await getEncryptionKey(c.env);
+  for (const item of items) {
+    const accessToken = await getPlaidAccessToken(item, encryptionKey);
+    await sandboxFireWebhook(plaidConfig, accessToken, "SYNC_UPDATES_AVAILABLE");
+  }
+  return c.json({ ok: true, itemsFired: items.length });
 });

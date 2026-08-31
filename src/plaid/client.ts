@@ -79,6 +79,14 @@ export async function itemRemove(config: PlaidConfig, accessToken: string): Prom
   await plaidFetch(config, "/item/remove", { access_token: accessToken });
 }
 
+/** Sandbox-only: makes Plaid inject new fake transaction(s) into a linked
+ * Sandbox Item and immediately send the real webhook back to us — lets
+ * the whole ingest pipeline be exercised end to end without a real charge
+ * (PLAN.md §4.0 testing note). Plaid rejects this outside sandbox. */
+export async function sandboxFireWebhook(config: PlaidConfig, accessToken: string, webhookCode: string): Promise<void> {
+  await plaidFetch(config, "/sandbox/item/fire_webhook", { access_token: accessToken, webhook_code: webhookCode });
+}
+
 export async function accountsBalanceGet(config: PlaidConfig, accessToken: string): Promise<AccountsBalanceGetResponse> {
   return plaidFetch<AccountsBalanceGetResponse>(config, "/accounts/balance/get", { access_token: accessToken });
 }
