@@ -310,7 +310,9 @@ export function App() {
         )}
         {documentCategory && <DocumentsPage householdId={household.id} category={documentCategory} users={users} assets={assets} />}
         {maintenanceAssetType && <MaintenancePage householdId={household.id} assetType={maintenanceAssetType} assets={assets} />}
-        {(activeView === ASSET_SUMMARY_VIEW || assetIdInView) && <AssetsPage selectedAssetId={assetIdInView ?? undefined} />}
+        {(activeView === ASSET_SUMMARY_VIEW || assetIdInView) && (
+          <AssetsPage householdId={household.id} assets={assets} selectedAssetId={assetIdInView ?? undefined} onChanged={refreshAssets} />
+        )}
         {activeView === "Settings" && (
           <SettingsPage
             householdId={household.id}

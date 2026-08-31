@@ -16,14 +16,14 @@ interface Props {
 }
 
 export function SettingsPage({ householdId, users, accounts, categories, onUsersChanged, onAccountsChanged, onCategoriesChanged, onTransactionsChanged }: Props) {
+  // No page-level heading here — App.tsx's shared page header already
+  // renders "Settings" and its subtitle for every view, this one included.
   return (
-    <>
-      <h1>Settings</h1>
-      <p className="subtitle">People, accounts, categories, and importing history.</p>
+    <div className="section">
       <PeopleSection householdId={householdId} users={users} onChanged={onUsersChanged} />
       <AccountsSection householdId={householdId} users={users} accounts={accounts} onChanged={onAccountsChanged} />
       <CategoriesSection householdId={householdId} categories={categories} onChanged={onCategoriesChanged} />
       <ImportSection householdId={householdId} accounts={accounts} onChanged={onTransactionsChanged} />
-    </>
+    </div>
   );
 }
