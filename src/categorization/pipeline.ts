@@ -69,12 +69,14 @@ export async function categorizeTransaction(
     ownerUserId: account.owner_user_id,
   };
 
-  // Only expense/savings categories are funded envelopes and valid
-  // targets for the cascade — income/transfer are never what a charge
-  // gets filed under (PLAN.md §3), and an archived one shouldn't be
-  // offered as a fresh answer.
+  // Expense/savings categories are funded envelopes; income is a valid
+  // cascade target too (a deposit needs somewhere to land — see
+  // src/categorization/defaultIncomeRule.ts) even though it's never
+  // funded. Transfer is excluded: those are detected and marked
+  // separately via is_transfer (PLAN.md §3), never picked from this list.
+  // An archived category shouldn't be offered as a fresh answer either way.
   const categoryOptions = allCategories
-    .filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings"))
+    .filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings" || c.kind === "income"))
     .map((c) => ({ id: c.id, name: c.name }));
 
   const result = await categorize(candidate, {

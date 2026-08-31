@@ -89,7 +89,11 @@ export async function processInboundReply(env: Env, householdId: string, userId:
     postedAt: t.posted_at,
   }));
 
-  const categories = (await listCategories(env.DB, householdId)).filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings"));
+  // Income is a valid reply target too, e.g. "that was my paycheck" —
+  // matches src/categorization/pipeline.ts's candidate list.
+  const categories = (await listCategories(env.DB, householdId)).filter(
+    (c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings" || c.kind === "income"),
+  );
   const categoryOptions = categories.map((c) => ({ id: c.id, name: c.name }));
 
   const client = anthropicClient ?? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
