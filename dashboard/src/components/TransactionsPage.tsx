@@ -42,7 +42,14 @@ export function TransactionsPage({ householdId, users, accounts, categories, tra
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
-  const budgetableCategories = useMemo(() => categories.filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings")), [categories]);
+  // Income is selectable here too — a deposit needs somewhere to land
+  // (server-side default: src/categorization/defaultIncomeRule.ts), and a
+  // household member should be able to move it from the generic default
+  // to something more specific (e.g. "Paycheck") by hand.
+  const budgetableCategories = useMemo(
+    () => categories.filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings" || c.kind === "income")),
+    [categories],
+  );
 
   const memberFor = (t: Transaction) => {
     const ownerId = accountById.get(t.account_id)?.owner_user_id;

@@ -12,6 +12,19 @@ export async function getCategory(db: D1Database, householdId: string, id: strin
   return getScoped<Category>(db, "category", householdId, id);
 }
 
+/** The category a positive-amount transaction should default to when
+ * nothing more specific matches (src/categorization/defaultIncomeRule.ts).
+ * Prefers the seeded "Other Income" by name since it's the generic catch-
+ * all; falls back to whatever income-kind category exists if the
+ * household renamed or replaced its taxonomy, and to null only if there's
+ * no income category at all to file under. */
+export async function getDefaultIncomeCategory(db: D1Database, householdId: string): Promise<Category | null> {
+  const categories = await listCategories(db, householdId);
+  const income = categories.filter((c) => c.kind === "income" && !c.archived_at);
+  if (income.length === 0) return null;
+  return income.find((c) => c.name.toLowerCase() === "other income") ?? income[0]!;
+}
+
 export async function createCategory(
   db: D1Database,
   householdId: string,

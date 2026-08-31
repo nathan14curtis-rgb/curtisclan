@@ -2,6 +2,7 @@ import { getEncryptionKey, getPlaidConfig } from "../lib/secrets";
 import { normalizeMerchant } from "../lib/merchant";
 import type { TransactionQueueMessage } from "../lib/queueMessages";
 import type { AccountType, Env } from "../types";
+import { ensureDefaultIncomeRule } from "../categorization/defaultIncomeRule";
 import {
   createAccount,
   getAccountByPlaidAccountId,
@@ -163,6 +164,14 @@ export async function syncPlaidItem(env: Env, householdId: string, plaidItemId: 
   const item = await getPlaidItemByPlaidId(env.DB, plaidItemId);
   if (!item || item.household_id !== householdId || item.status !== "active") return;
   const accessToken = await getPlaidAccessToken(item, encryptionKey);
+
+  // Idempotent, and cheap once already present — ensures every deposit
+  // this sync is about to see has somewhere to land instead of asking a
+  // human "what was this $4,710?" for every paycheck (see
+  // src/categorization/defaultIncomeRule.ts). Runs before any transaction
+  // in this sync gets queued for categorization, including a household's
+  // very first sync.
+  await ensureDefaultIncomeRule(env.DB, householdId);
 
   // Captured once, up front — the loop below reassigns the local `cursor`
   // variable as it pages, so `item.cursor` is only reliable here.
