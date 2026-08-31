@@ -13,6 +13,7 @@ import {
   type User,
 } from "./api";
 import { ASSET_SUMMARY_VIEW, Sidebar, assetIdFromView } from "./components/Sidebar";
+import { LoginPage } from "./components/LoginPage";
 import { OverviewPage } from "./components/OverviewPage";
 import { TransactionsPage } from "./components/TransactionsPage";
 import { EnvelopesPage } from "./components/EnvelopesPage";
@@ -26,7 +27,6 @@ import { SettingsPage } from "./components/SettingsPage";
 import { getPageHead } from "./pageHeads";
 import { currentMonth, daysLeftInMonth } from "./format";
 
-const STORAGE_KEY = "curtisclan.householdId";
 const VIEW_STORAGE_KEY = "curtisclan.activeView";
 
 const DOCUMENT_CATEGORY_BY_VIEW: Record<string, DocumentCategory> = {
@@ -42,6 +42,8 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newHouseholdName, setNewHouseholdName] = useState("");
+  const [newCreatorName, setNewCreatorName] = useState("");
+  const [showCreateHousehold, setShowCreateHousehold] = useState(false);
   const [activeView, setActiveView] = useState(() => localStorage.getItem(VIEW_STORAGE_KEY) ?? "Overview");
 
   function changeView(view: string) {
@@ -61,16 +63,15 @@ export function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [envelopeSummaries, setEnvelopeSummaries] = useState<Record<string, EnvelopeMonthSummary>>({});
 
+  // Household identity now comes from the session cookie (src/routes/auth.ts),
+  // not a client-trusted localStorage id — a 401 here just means "not
+  // logged in yet," not an error to surface.
   useEffect(() => {
-    const id = localStorage.getItem(STORAGE_KEY);
-    if (!id) {
-      setLoading(false);
-      return;
-    }
     api
-      .getHousehold(id)
+      .getSession()
+      .then((session) => api.getHousehold(session.householdId))
       .then(setHousehold)
-      .catch(() => localStorage.removeItem(STORAGE_KEY))
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
@@ -130,12 +131,17 @@ export function App() {
     e.preventDefault();
     setError(null);
     try {
-      const hh = await api.createHousehold(newHouseholdName.trim());
-      localStorage.setItem(STORAGE_KEY, hh.id);
+      const { household: hh } = await api.createHousehold(newHouseholdName.trim(), newCreatorName.trim());
       setHousehold(hh);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create household");
     }
+  }
+
+  async function logout() {
+    await api.logout().catch(() => {});
+    setHousehold(null);
+    setShowCreateHousehold(false);
   }
 
   // Ready to Assign, corrected for outstanding credit-card balances
@@ -199,6 +205,9 @@ export function App() {
   if (loading) return <p className="hint">Loading…</p>;
 
   if (!household) {
+    if (!showCreateHousehold) {
+      return <LoginPage onLoggedIn={() => window.location.reload()} onCreateHouseholdInstead={() => setShowCreateHousehold(true)} />;
+    }
     return (
       <>
         <h1>Home Base</h1>
@@ -216,8 +225,26 @@ export function App() {
               required
             />
           </div>
+          <div className="field">
+            <label htmlFor="hh-creator-name">Your name</label>
+            <input
+              id="hh-creator-name"
+              type="text"
+              value={newCreatorName}
+              onChange={(e) => setNewCreatorName(e.target.value)}
+              placeholder="Nathan"
+              required
+            />
+          </div>
           <button type="submit">Create</button>
           {error && <p className="error">{error}</p>}
+          <p className="hint">
+            Already have a household?{" "}
+            <a href="#" onClick={(e) => (e.preventDefault(), setShowCreateHousehold(false))}>
+              Log in instead
+            </a>
+            .
+          </p>
         </form>
       </>
     );
@@ -238,6 +265,7 @@ export function App() {
         memberCount={users.length}
         monthStatus={{ daysLeft: daysLeftInMonth(), safeToSpendCents: Math.max(0, readyToAssignCents) }}
         onOpenSettings={() => changeView("Settings")}
+        onLogout={logout}
       />
 
       <main className="main">

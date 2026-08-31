@@ -22,6 +22,7 @@ interface Props {
   household: Household;
   memberCount: number;
   onOpenSettings: () => void;
+  onLogout: () => void;
 }
 
 function NavGroup({
@@ -61,7 +62,7 @@ function NavGroup({
   );
 }
 
-export function Sidebar({ activeView, onChange, assets, monthStatus, household, memberCount, onOpenSettings }: Props) {
+export function Sidebar({ activeView, onChange, assets, monthStatus, household, memberCount, onOpenSettings, onLogout }: Props) {
   const [budgetingOpen, setBudgetingOpen] = useState(true);
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [maintenanceOpen, setMaintenanceOpen] = useState(false);
@@ -129,6 +130,14 @@ export function Sidebar({ activeView, onChange, assets, monthStatus, household, 
           <span className="household-name">{household.name}</span>
           <span className="household-meta">{memberCount} member{memberCount === 1 ? "" : "s"}</span>
         </span>
+      </button>
+      <button
+        className="secondary"
+        type="button"
+        onClick={onLogout}
+        style={{ margin: "8px 12px 0", fontSize: 13, padding: "6px 10px" }}
+      >
+        Log out
       </button>
     </aside>
   );

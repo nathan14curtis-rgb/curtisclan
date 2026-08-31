@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { Env } from "./types";
 import { NotFoundError } from "./db/client";
 import { getHousehold } from "./db/households";
+import { requireSession } from "./lib/authMiddleware";
+import { authRoute } from "./routes/auth";
 import { householdsRoute } from "./routes/households";
 import { usersRoute } from "./routes/users";
 import { accountsRoute } from "./routes/accounts";
@@ -34,15 +36,20 @@ app.onError((err, c) => {
 
 app.get("/health", (c) => c.json({ ok: true, environment: c.env.ENVIRONMENT }));
 
+app.route("/api/auth", authRoute);
 app.route("/api/households", householdsRoute);
 
 // Every resource below is scoped to one household (PLAN §10) — confirm it
-// exists once, up front, instead of every handler re-deriving that.
+// exists once, up front, instead of every handler re-deriving that. A
+// valid session for *this* household is required too (src/lib/authMiddleware.ts)
+// — the highest-consequence data in this app used to be reachable by
+// anyone who knew a household id; it no longer is.
 const scoped = new Hono<{ Bindings: Env }>();
 scoped.use("/:householdId/*", async (c, next) => {
   await getHousehold(c.env.DB, c.req.param("householdId"));
   await next();
 });
+scoped.use("/:householdId/*", requireSession);
 scoped.route("/:householdId/users", usersRoute);
 scoped.route("/:householdId/accounts", accountsRoute);
 scoped.route("/:householdId/categories", categoriesRoute);
