@@ -94,8 +94,17 @@ export async function categorizeTransaction(env: Env, householdId: string, trans
   if (!result.needsClarification) return;
 
   const alreadyOpen = await getLatestClarificationForTransaction(env.DB, householdId, transactionId);
-  if (alreadyOpen && (alreadyOpen.status === "queued" || alreadyOpen.status === "sent")) {
-    console.log(`[categorize] ${transactionId} clarification already ${alreadyOpen.status} — skipping`);
+  if (alreadyOpen && alreadyOpen.status === "sent") {
+    console.log(`[categorize] ${transactionId} clarification already sent — skipping`);
+    return;
+  }
+  if (alreadyOpen && alreadyOpen.status === "queued") {
+    // Still "queued" means its send_clarification job never actually got
+    // through (dropped after exhausting the queue's retries, most likely)
+    // — re-enqueue rather than leaving it stuck forever.
+    console.log(`[categorize] ${transactionId} clarification ${alreadyOpen.id} still queued — re-sending`);
+    const message: MessageQueueMessage = { type: "send_clarification", householdId, clarificationId: alreadyOpen.id };
+    await env.MESSAGE_QUEUE.send(message);
     return;
   }
 

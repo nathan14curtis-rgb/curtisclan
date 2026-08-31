@@ -64,11 +64,14 @@ export async function categorize(txn: CandidateTransaction, ctx: CascadeContext)
       promptVersion: llmResult.promptVersion,
       needsClarification: !autoApply,
     };
-  } catch {
+  } catch (err) {
     // LLM layer unavailable or errored — never block ingest on it. Falls
     // through to "ask a human" with no guess yet; the caller (Phase 3's
     // queue consumer) is responsible for §5.5's "always assign a best
-    // guess immediately" once a layer actually produces one.
+    // guess immediately" once a layer actually produces one. Logged
+    // (rather than swallowed outright) so a broken LLM layer is visible
+    // in Workers Logs instead of silently degrading forever.
+    console.error(`[cascade] LLM layer failed for ${txn.id}:`, err);
     return { layer: "none", categoryId: null, needsClarification: true };
   }
 }
