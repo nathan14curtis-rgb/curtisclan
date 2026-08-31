@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { AccountStatus, AccountType, Env } from "../types";
 import { createAccount, listAccounts, updateAccount } from "../db/accounts";
+import { AccountNotPlaidLinkedError, unlinkPlaidAccount } from "../plaid/unlink";
 
 const ACCOUNT_TYPES: AccountType[] = ["depository_checking", "depository_savings", "credit_card", "other"];
 const ACCOUNT_STATUSES: AccountStatus[] = ["active", "login_required", "removed"];
@@ -48,4 +49,24 @@ accountsRoute.patch("/:accountId", async (c) => {
 
   const account = await updateAccount(c.env.DB, requireParam(c, "householdId"), requireParam(c, "accountId"), update);
   return c.json(account);
+});
+
+// Plaid-specific removal: tells Plaid to release the Item (best-effort —
+// a stale/cross-environment access token, e.g. leftover Sandbox test
+// data now that PLAID_ENV is production, will never authenticate, and
+// that's fine, not a reason to block), marks the item and account
+// removed, and — only if asked — purges every transaction it synced.
+// Manual/CSV-only accounts use the plain PATCH status='removed' above
+// instead; they were never linked to anything to release.
+accountsRoute.post("/:accountId/unlink", async (c) => {
+  const body = await c.req.json<{ deleteTransactions?: boolean }>();
+  try {
+    const result = await unlinkPlaidAccount(c.env, requireParam(c, "householdId"), requireParam(c, "accountId"), {
+      deleteTransactions: body.deleteTransactions === true,
+    });
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof AccountNotPlaidLinkedError) return c.json({ error: err.message }, 400);
+    throw err;
+  }
 });

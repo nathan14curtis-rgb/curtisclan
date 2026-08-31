@@ -53,6 +53,7 @@ interface Props {
   users: User[];
   accounts: Account[];
   onChanged: () => Promise<void>;
+  onTransactionsChanged: () => Promise<void>;
 }
 
 /**
@@ -62,7 +63,7 @@ interface Props {
  * (they're created by the async plaid_sync queue job, see
  * src/plaid/sync.ts), so this briefly polls for them to appear.
  */
-export function AccountsSection({ householdId, users, accounts, onChanged }: Props) {
+export function AccountsSection({ householdId, users, accounts, onChanged, onTransactionsChanged }: Props) {
   const [linkingAsUserId, setLinkingAsUserId] = useState("");
   const [linking, setLinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +72,7 @@ export function AccountsSection({ householdId, users, accounts, onChanged }: Pro
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editOwnerId, setEditOwnerId] = useState("");
+  const [unlinkingId, setUnlinkingId] = useState<string | null>(null);
 
   function startEdit(a: Account) {
     setEditingId(a.id);
@@ -96,6 +98,25 @@ export function AccountsSection({ householdId, users, accounts, onChanged }: Pro
       await onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to remove account");
+    }
+  }
+
+  async function unlink(a: Account) {
+    const label = `${a.name}${a.mask ? ` ····${a.mask}` : ""}`;
+    if (!window.confirm(`Unlink ${label} from Plaid? This stops syncing and can't be undone from here — you'd need to re-link it.`)) return;
+    const deleteTransactions = window.confirm(
+      `Also delete every transaction ${label} has ever synced? Choose OK if this was Sandbox test data. Choose Cancel to keep its history and just stop syncing.`,
+    );
+    setUnlinkingId(a.id);
+    setError(null);
+    try {
+      const result = await api.unlinkAccount(householdId, a.id, deleteTransactions);
+      await onChanged();
+      if (result.transactionsDeleted > 0) await onTransactionsChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to unlink account");
+    } finally {
+      setUnlinkingId(null);
     }
   }
 
@@ -199,7 +220,11 @@ export function AccountsSection({ householdId, users, accounts, onChanged }: Pro
                   <button className="secondary" onClick={() => startEdit(a)}>
                     Edit
                   </button>
-                  {!a.plaid_item_id && (
+                  {a.plaid_item_id ? (
+                    <button className="danger" onClick={() => unlink(a)} disabled={unlinkingId === a.id}>
+                      {unlinkingId === a.id ? "Unlinking…" : "Unlink"}
+                    </button>
+                  ) : (
                     <button className="danger" onClick={() => remove(a.id)}>
                       Remove
                     </button>
