@@ -90,13 +90,14 @@ describe("categorize cascade", () => {
   });
 
   it("layer 3: falls through to the LLM and auto-applies a confident result", async () => {
-    const llm = new FakeLlmClassifier({ categoryId: "cat_groceries", confidence: 0.95 });
+    const llm = new FakeLlmClassifier({ categoryId: "cat_groceries", confidence: 1 });
     const result = await categorize(makeTxn(), { rules: [], merchantMemory: null, llm, categories: [] });
     expect(result.layer).toBe("llm");
     if (result.layer === "llm") {
       expect(result.categoryId).toBe("cat_groceries");
-      // Novel merchant (no memory) needs the higher threshold, but 0.95
-      // clears it, and there's no alternatives list to shrink the margin.
+      // Novel merchant (no memory) needs the full 1.0 (0.9 base + the 0.1
+      // novel-merchant penalty) — nothing less clears it, and there's no
+      // alternatives list to shrink the margin.
       expect(result.needsClarification).toBe(false);
     }
   });
