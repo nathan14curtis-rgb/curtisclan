@@ -262,6 +262,26 @@ describe("savings goals (envelope target_date)", () => {
     const [reloaded] = (await listEnvelopes(db, household.id)).filter((e) => e.id === envelope.id);
     expect(reloaded!.target_date).toBe("2027-06-01");
   });
+
+  // Found in manual verification: an envelope created without a
+  // target_date (e.g. the default-taxonomy Savings envelopes every
+  // household starts with) had no way to become a goal after the fact —
+  // updateEnvelope silently ignored targetDate entirely.
+  it("updateEnvelope can set, and later clear, target_date on an existing envelope", async () => {
+    const { household } = await seedHousehold();
+    const category = await createCategory(db, household.id, { name: "Emergency Fund", kind: "savings" });
+    const envelope = await createEnvelopeForCategory(db, household.id, category, { groupName: "Goals" });
+    expect(envelope.target_date).toBeNull();
+
+    const withDate = await updateEnvelope(db, household.id, envelope.id, { targetDate: "2027-03-01" });
+    expect(withDate.target_date).toBe("2027-03-01");
+
+    const renamedOnly = await updateEnvelope(db, household.id, envelope.id, { groupName: "Savings Goals" });
+    expect(renamedOnly.target_date).toBe("2027-03-01"); // untouched — key omitted
+
+    const cleared = await updateEnvelope(db, household.id, envelope.id, { targetDate: null });
+    expect(cleared.target_date).toBeNull();
+  });
 });
 
 describe("category/envelope/account editing (dashboard CRUD)", () => {

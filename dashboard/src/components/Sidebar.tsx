@@ -109,7 +109,9 @@ export function Sidebar({ activeView, onChange, assets, monthStatus, household, 
 
       <div className="month-status">
         <span className="month-status-label">Month status</span>
-        <span className="month-status-figure">{monthStatus.daysLeft} days left</span>
+        <span className="month-status-figure">
+          {monthStatus.daysLeft} day{monthStatus.daysLeft === 1 ? "" : "s"} left
+        </span>
         <span className="month-status-detail">
           You have {formatCents(monthStatus.safeToSpendCents)} safe to spend before the 1st.
         </span>

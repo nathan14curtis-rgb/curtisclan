@@ -15,26 +15,29 @@ export async function getEnvelopeByCategory(db: D1Database, householdId: string,
 }
 
 /** Regrouping (e.g. into a "Bills" group_name for the dashboard's Bills
- * view) and adjusting the monthly target — the two things about an
- * envelope itself, as opposed to its category's name, that are worth
- * editing after creation. */
+ * view), adjusting the monthly target, and setting/clearing target_date —
+ * the things about an envelope itself, as opposed to its category's name,
+ * that are worth editing after creation. target_date is what turns a plain
+ * expense/savings envelope into a goal-style one (PLAN.md §8.5) after the
+ * fact, not just at creation via routes/categories.ts. */
 export async function updateEnvelope(
   db: D1Database,
   householdId: string,
   id: string,
-  input: { groupName?: string; monthlyTargetCents?: number | null },
+  input: { groupName?: string; monthlyTargetCents?: number | null; targetDate?: string | null },
 ): Promise<Envelope> {
   const existing = await getEnvelope(db, householdId, id);
   const groupName = input.groupName ?? existing.group_name;
   // Distinguish "omitted" (leave as-is) from "explicitly null" (clear the
   // target) — a plain `?? existing` can't tell those apart.
   const monthlyTargetCents = "monthlyTargetCents" in input ? (input.monthlyTargetCents ?? null) : existing.monthly_target_cents;
+  const targetDate = "targetDate" in input ? (input.targetDate ?? null) : existing.target_date;
   const now = nowIso();
   await db
-    .prepare(`UPDATE envelope SET group_name = ?, monthly_target_cents = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
-    .bind(groupName, monthlyTargetCents, now, id, householdId)
+    .prepare(`UPDATE envelope SET group_name = ?, monthly_target_cents = ?, target_date = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(groupName, monthlyTargetCents, targetDate, now, id, householdId)
     .run();
-  return { ...existing, group_name: groupName, monthly_target_cents: monthlyTargetCents, updated_at: now };
+  return { ...existing, group_name: groupName, monthly_target_cents: monthlyTargetCents, target_date: targetDate, updated_at: now };
 }
 
 export async function archiveEnvelopeForCategory(db: D1Database, householdId: string, categoryId: string): Promise<void> {

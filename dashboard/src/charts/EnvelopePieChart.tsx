@@ -118,7 +118,9 @@ export function EnvelopePieChart({ slices }: Props) {
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "#141413" }}>
               {formatCents(hovered.slice.spentCents)} of {formatCents(hovered.slice.plannedCents)}
             </span>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "#6c6a64" }}>{hovered.slice.count} transactions</span>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "#6c6a64" }}>
+              {hovered.slice.count} transaction{hovered.slice.count === 1 ? "" : "s"}
+            </span>
           </>
         ) : (
           <span style={{ fontSize: 13, color: "#8e8b82" }}>hover a slice for detail</span>

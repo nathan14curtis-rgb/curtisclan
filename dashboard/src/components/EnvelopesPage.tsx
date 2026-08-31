@@ -18,7 +18,7 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const [newKind, setNewKind] = useState<"expense" | "savings">("expense");
   const [newGroup, setNewGroup] = useState("");
   const [newTarget, setNewTarget] = useState("");
-  const [editing, setEditing] = useState<Record<string, { groupName: string; target: string }>>({});
+  const [editing, setEditing] = useState<Record<string, { groupName: string; target: string; targetDate: string }>>({});
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const visible = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
@@ -40,7 +40,10 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   }, [visible]);
 
   function startEdit(e: Envelope) {
-    setEditing((prev) => ({ ...prev, [e.id]: { groupName: e.group_name, target: e.monthly_target_cents ? (e.monthly_target_cents / 100).toString() : "" } }));
+    setEditing((prev) => ({
+      ...prev,
+      [e.id]: { groupName: e.group_name, target: e.monthly_target_cents ? (e.monthly_target_cents / 100).toString() : "", targetDate: e.target_date ?? "" },
+    }));
   }
 
   async function saveEdit(envelopeId: string) {
@@ -51,6 +54,7 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
       await api.updateEnvelope(householdId, envelopeId, {
         groupName: draft.groupName.trim() || "Uncategorized",
         monthlyTargetCents: draft.target.trim() ? Math.round(Number(draft.target) * 100) : null,
+        targetDate: draft.targetDate || null,
       });
       setEditing((prev) => {
         const { [envelopeId]: _, ...rest } = prev;
@@ -156,6 +160,14 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
                         onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, target: e.target.value } }))}
                         style={{ width: 90 }}
                       />
+                      {category?.kind === "savings" && (
+                        <input
+                          type="date"
+                          title="Goal date"
+                          value={draft.targetDate}
+                          onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, targetDate: e.target.value } }))}
+                        />
+                      )}
                       <button className="secondary" onClick={() => saveEdit(envelope.id)}>
                         Save
                       </button>

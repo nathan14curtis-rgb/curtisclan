@@ -32,10 +32,12 @@ envelopesRoute.get("/summary", async (c) => {
 });
 
 // group_name (which powers the dashboard's Bills view — an envelope
-// grouped "Bills" instead of, say, "Everyday") and monthly_target_cents
-// are the two things worth editing about an envelope after creation.
+// grouped "Bills" instead of, say, "Everyday"), monthly_target_cents, and
+// target_date (turning an envelope into a goal after creation, not just
+// at creation time via routes/categories.ts) are what's worth editing
+// about an envelope after creation.
 envelopesRoute.patch("/:envelopeId", async (c) => {
-  const body = await c.req.json<{ groupName?: string; monthlyTargetCents?: number | null }>();
+  const body = await c.req.json<{ groupName?: string; monthlyTargetCents?: number | null; targetDate?: string | null }>();
   const envelope = await updateEnvelope(c.env.DB, requireParam(c, "householdId"), requireParam(c, "envelopeId"), body);
   return c.json(envelope);
 });

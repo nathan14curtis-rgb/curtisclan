@@ -189,8 +189,11 @@ export const api = {
     request<Category>(`/households/${householdId}/categories/${categoryId}/unarchive`, { method: "POST" }),
 
   listEnvelopes: (householdId: string) => request<Envelope[]>(`/households/${householdId}/envelopes`),
-  updateEnvelope: (householdId: string, envelopeId: string, input: { groupName?: string; monthlyTargetCents?: number | null }) =>
-    request<Envelope>(`/households/${householdId}/envelopes/${envelopeId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  updateEnvelope: (
+    householdId: string,
+    envelopeId: string,
+    input: { groupName?: string; monthlyTargetCents?: number | null; targetDate?: string | null },
+  ) => request<Envelope>(`/households/${householdId}/envelopes/${envelopeId}`, { method: "PATCH", body: JSON.stringify(input) }),
   getEnvelopeSummary: (householdId: string, envelopeId: string, month: string) =>
     request<EnvelopeMonthSummary>(`/households/${householdId}/envelopes/${envelopeId}/summary?month=${month}`),
   // Every envelope's summary in one round trip — the Overview page's
