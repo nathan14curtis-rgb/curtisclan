@@ -3,6 +3,7 @@ import { requireParam } from "../lib/http";
 import type { Env } from "../types";
 import { applyCategorization, getTransaction, listTransactions, splitTransaction } from "../db/transactions";
 import { listClassifications } from "../db/classifications";
+import { categorizeTransaction } from "../categorization/pipeline";
 
 export const transactionsRoute = new Hono<{ Bindings: Env }>();
 
@@ -44,6 +45,19 @@ transactionsRoute.patch("/:transactionId/categorize", async (c) => {
     method: "human",
     createdByUserId: body.createdByUserId,
   });
+  return c.json(transaction);
+});
+
+// Recovery path for a transaction that never got auto-categorized (stuck
+// `categorize` queue job, or freshly added rule/merchant memory that
+// should now match) — runs the cascade synchronously so any failure
+// surfaces directly in the response and this request's own invocation
+// log, instead of the queue's silent retry-then-drop.
+transactionsRoute.post("/:transactionId/recategorize", async (c) => {
+  const householdId = requireParam(c, "householdId");
+  const transactionId = requireParam(c, "transactionId");
+  await categorizeTransaction(c.env, householdId, transactionId);
+  const transaction = await getTransaction(c.env.DB, householdId, transactionId);
   return c.json(transaction);
 });
 
