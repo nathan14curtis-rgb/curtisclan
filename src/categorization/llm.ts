@@ -54,14 +54,15 @@ function buildTool(categories: CategoryOption[]): Anthropic.Tool {
       type: "object" as const,
       properties: {
         category_id: { type: "string", enum: categoryIds },
-        // Anthropic's strict/custom tool schemas reject `minimum`/`maximum`
-        // on number properties — the [0, 1] range is enforced by the
+        // Anthropic's strict/custom tool schemas only support a narrow
+        // JSON Schema subset — no numeric/array constraint keywords like
+        // minimum/maximum/maxItems, all rejected with a 400. The [0, 1]
+        // confidence range and "up to 3 alternatives" are enforced by the
         // prompt instructions instead (buildSystemPrompt below).
         confidence: { type: "number" },
         reasoning: { type: "string" },
         alternatives: {
           type: "array",
-          maxItems: 3,
           items: {
             type: "object",
             properties: {
