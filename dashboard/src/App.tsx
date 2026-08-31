@@ -296,10 +296,20 @@ export function App() {
             onChanged={refreshCategoriesAndEnvelopes}
           />
         )}
-        {activeView === "Goals" && <GoalsPage />}
-        {activeView === "Members" && <MembersPage />}
-        {documentCategory && <DocumentsPage category={documentCategory} />}
-        {maintenanceAssetType && <MaintenancePage assetType={maintenanceAssetType} />}
+        {activeView === "Goals" && (
+          <GoalsPage
+            householdId={household.id}
+            categories={categories}
+            envelopes={envelopes}
+            envelopeSummaries={envelopeSummaries}
+            onChanged={refreshCategoriesAndEnvelopes}
+          />
+        )}
+        {activeView === "Members" && (
+          <MembersPage householdId={household.id} users={users} accounts={accounts} transactions={transactions} onChanged={refreshUsers} />
+        )}
+        {documentCategory && <DocumentsPage householdId={household.id} category={documentCategory} users={users} assets={assets} />}
+        {maintenanceAssetType && <MaintenancePage householdId={household.id} assetType={maintenanceAssetType} assets={assets} />}
         {(activeView === ASSET_SUMMARY_VIEW || assetIdInView) && <AssetsPage selectedAssetId={assetIdInView ?? undefined} />}
         {activeView === "Settings" && (
           <SettingsPage
