@@ -63,6 +63,8 @@ export async function createTransaction(
     excluded_from_budget: 0,
     split_parent_id: null,
     source: input.source ?? "plaid",
+    verified_by_user_id: null,
+    verified_at: null,
     created_at: now,
     updated_at: now,
   };
@@ -81,34 +83,40 @@ export interface ListTransactionsFilter {
   limit?: number;
 }
 
+/** Shared by listTransactions and listTransactionsWithVerifyState so the
+ * two never drift apart on what a filter means. */
+function buildTransactionFilterClauses(householdId: string, filter: ListTransactionsFilter, columnPrefix = ""): { clauses: string[]; params: unknown[] } {
+  const clauses = [`${columnPrefix}household_id = ?`];
+  const params: unknown[] = [householdId];
+
+  if (filter.accountId) {
+    clauses.push(`${columnPrefix}account_id = ?`);
+    params.push(filter.accountId);
+  }
+  if (filter.categoryId) {
+    clauses.push(`${columnPrefix}category_id = ?`);
+    params.push(filter.categoryId);
+  }
+  if (filter.fromDate) {
+    clauses.push(`${columnPrefix}posted_at >= ?`);
+    params.push(filter.fromDate);
+  }
+  if (filter.toDate) {
+    clauses.push(`${columnPrefix}posted_at <= ?`);
+    params.push(filter.toDate);
+  }
+  if (filter.needsReview) {
+    clauses.push(`${columnPrefix}category_id IS NULL`);
+  }
+  return { clauses, params };
+}
+
 export async function listTransactions(
   db: D1Database,
   householdId: string,
   filter: ListTransactionsFilter = {},
 ): Promise<Transaction[]> {
-  const clauses = ["household_id = ?"];
-  const params: unknown[] = [householdId];
-
-  if (filter.accountId) {
-    clauses.push("account_id = ?");
-    params.push(filter.accountId);
-  }
-  if (filter.categoryId) {
-    clauses.push("category_id = ?");
-    params.push(filter.categoryId);
-  }
-  if (filter.fromDate) {
-    clauses.push("posted_at >= ?");
-    params.push(filter.fromDate);
-  }
-  if (filter.toDate) {
-    clauses.push("posted_at <= ?");
-    params.push(filter.toDate);
-  }
-  if (filter.needsReview) {
-    clauses.push("category_id IS NULL");
-  }
-
+  const { clauses, params } = buildTransactionFilterClauses(householdId, filter);
   const limit = Math.min(filter.limit ?? 200, 1000);
   const { results } = await db
     .prepare(
@@ -117,6 +125,73 @@ export async function listTransactions(
     .bind(...params, limit)
     .all<Transaction>();
   return results;
+}
+
+export type VerifyState = "me" | "ai" | "none";
+const AUTO_VERIFY_METHODS = new Set<ClassificationMethod>(["rule", "memory", "llm"]);
+
+export interface TransactionWithVerifyState extends Transaction {
+  verify_state: VerifyState;
+}
+
+/** An explicit human action, recorded directly on the row (unlike
+ * category, which is corrected through applyCategorization + the audit
+ * trail) — "verified" is a stronger, distinct claim from "the category
+ * happens to be correct." */
+export async function verifyTransaction(db: D1Database, householdId: string, id: string, verifiedByUserId: string): Promise<Transaction> {
+  const now = nowIso();
+  const result = await db
+    .prepare(`UPDATE "transaction" SET verified_by_user_id = ?, verified_at = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(verifiedByUserId, now, now, id, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", id);
+  return getTransaction(db, householdId, id);
+}
+
+export async function unverifyTransaction(db: D1Database, householdId: string, id: string): Promise<Transaction> {
+  const now = nowIso();
+  const result = await db
+    .prepare(`UPDATE "transaction" SET verified_by_user_id = NULL, verified_at = NULL, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(now, id, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", id);
+  return getTransaction(db, householdId, id);
+}
+
+/**
+ * Derived, not stored — except the "me" signal, which is the real
+ * verified_by_user_id column. "ai" reflects the existing
+ * transaction_classification audit trail (latest method IN
+ * rule/memory/llm) rather than a second, potentially-conflicting source of
+ * truth: a transaction someone recategorized by hand in the dropdown
+ * (method='human') without ever clicking "verify" shows as "none", not
+ * "ai" — verification is a stronger, explicit claim than "the category
+ * happens to be right."
+ *
+ * One query for the whole list, not one per transaction — a correlated
+ * subquery picks each transaction's most recent classification method.
+ */
+export async function listTransactionsWithVerifyState(
+  db: D1Database,
+  householdId: string,
+  filter: ListTransactionsFilter = {},
+): Promise<TransactionWithVerifyState[]> {
+  const { clauses, params } = buildTransactionFilterClauses(householdId, filter, "t.");
+  const limit = Math.min(filter.limit ?? 200, 1000);
+  const { results } = await db
+    .prepare(
+      `SELECT t.*,
+         (SELECT method FROM transaction_classification tc WHERE tc.transaction_id = t.id ORDER BY tc.created_at DESC, tc.id DESC LIMIT 1) AS latest_method
+       FROM "transaction" t
+       WHERE ${clauses.join(" AND ")} ORDER BY t.posted_at DESC LIMIT ?`,
+    )
+    .bind(...params, limit)
+    .all<Transaction & { latest_method: ClassificationMethod | null }>();
+
+  return results.map(({ latest_method, ...t }) => ({
+    ...t,
+    verify_state: t.verified_by_user_id ? "me" : latest_method && AUTO_VERIFY_METHODS.has(latest_method) ? "ai" : "none",
+  }));
 }
 
 export interface ApplyCategorizationInput {

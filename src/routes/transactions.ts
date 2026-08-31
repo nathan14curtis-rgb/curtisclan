@@ -1,7 +1,15 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { Env } from "../types";
-import { applyCategorization, getTransaction, listTransactions, setTransactionExcluded, splitTransaction } from "../db/transactions";
+import {
+  applyCategorization,
+  getTransaction,
+  listTransactionsWithVerifyState,
+  setTransactionExcluded,
+  splitTransaction,
+  unverifyTransaction,
+  verifyTransaction,
+} from "../db/transactions";
 import { listClassifications } from "../db/classifications";
 import { categorizeTransaction } from "../categorization/pipeline";
 
@@ -9,7 +17,7 @@ export const transactionsRoute = new Hono<{ Bindings: Env }>();
 
 transactionsRoute.get("/", async (c) => {
   const householdId = requireParam(c, "householdId");
-  const transactions = await listTransactions(c.env.DB, householdId, {
+  const transactions = await listTransactionsWithVerifyState(c.env.DB, householdId, {
     accountId: c.req.query("accountId"),
     categoryId: c.req.query("categoryId"),
     fromDate: c.req.query("fromDate"),
@@ -68,6 +76,20 @@ transactionsRoute.post("/:transactionId/exclude", async (c) => {
   const body = await c.req.json<{ excluded?: boolean }>();
   if (typeof body.excluded !== "boolean") return c.json({ error: "excluded must be a boolean" }, 400);
   const transaction = await setTransactionExcluded(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), body.excluded);
+  return c.json(transaction);
+});
+
+// The teal-check "verified by you" mark — an explicit human confirmation,
+// distinct from (and not implied by) categorizing a transaction.
+transactionsRoute.post("/:transactionId/verify", async (c) => {
+  const body = await c.req.json<{ verifiedByUserId?: string }>();
+  if (!body.verifiedByUserId) return c.json({ error: "verifiedByUserId is required" }, 400);
+  const transaction = await verifyTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), body.verifiedByUserId);
+  return c.json(transaction);
+});
+
+transactionsRoute.post("/:transactionId/unverify", async (c) => {
+  const transaction = await unverifyTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"));
   return c.json(transaction);
 });
 

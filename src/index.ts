@@ -11,6 +11,9 @@ import { transactionsRoute } from "./routes/transactions";
 import { rulesRoute } from "./routes/rules";
 import { importRoute } from "./routes/importCsv";
 import { plaidRoute } from "./routes/plaid";
+import { assetsRoute } from "./routes/assets";
+import { documentsRoute } from "./routes/documents";
+import { maintenanceRoute } from "./routes/maintenance";
 import { plaidWebhookRoute } from "./routes/plaidWebhook";
 import { sendblueWebhookRoute } from "./routes/sendblueWebhook";
 import { handleQueueBatch } from "./queue/consumer";
@@ -48,6 +51,9 @@ scoped.route("/:householdId/transactions", transactionsRoute);
 scoped.route("/:householdId/rules", rulesRoute);
 scoped.route("/:householdId/import", importRoute);
 scoped.route("/:householdId/plaid", plaidRoute);
+scoped.route("/:householdId/assets", assetsRoute);
+scoped.route("/:householdId/documents", documentsRoute);
+scoped.route("/:householdId/maintenance", maintenanceRoute);
 
 app.route("/api/households", scoped);
 

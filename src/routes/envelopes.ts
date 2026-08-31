@@ -1,7 +1,14 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { Env } from "../types";
-import { allocateToEnvelope, getEnvelopeMonthSummary, listEnvelopes, moveMoneyBetweenEnvelopes, updateEnvelope } from "../db/envelopes";
+import {
+  allocateToEnvelope,
+  getEnvelopeMonthSummariesForHousehold,
+  getEnvelopeMonthSummary,
+  listEnvelopes,
+  moveMoneyBetweenEnvelopes,
+  updateEnvelope,
+} from "../db/envelopes";
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
 
@@ -10,6 +17,18 @@ export const envelopesRoute = new Hono<{ Bindings: Env }>();
 envelopesRoute.get("/", async (c) => {
   const envelopes = await listEnvelopes(c.env.DB, requireParam(c, "householdId"));
   return c.json(envelopes);
+});
+
+// Registered before "/:envelopeId" — Hono's router prioritizes a literal
+// path segment over a param segment regardless of registration order, but
+// this is still the right place for it to live: every envelope's summary
+// at once, for pages (the Overview envelope-fill chart) that need all of
+// them, instead of the per-envelope N+1 pattern the dashboard used before.
+envelopesRoute.get("/summary", async (c) => {
+  const month = c.req.query("month");
+  if (!month || !MONTH_RE.test(month)) return c.json({ error: "month query param must be 'YYYY-MM'" }, 400);
+  const summaries = await getEnvelopeMonthSummariesForHousehold(c.env.DB, requireParam(c, "householdId"), month);
+  return c.json(summaries);
 });
 
 // group_name (which powers the dashboard's Bills view — an envelope
