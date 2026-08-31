@@ -55,10 +55,23 @@ real D1 + a stubbed `fetch` intercepting the Sendblue call; the
 Claude-calling code is tested against a fake `Anthropic` client double,
 since this environment holds no live API keys.
 
+**Phase 4 (Dashboard, started):** a Vite/React SPA (`dashboard/`), built to
+`dashboard/dist` and served by the same Worker via Workers Assets — same
+origin, so it just calls relative `/api/...` paths. What exists so far is
+the Setup page: create the household and people, verify phone numbers,
+Plaid Link (real browser-driven linking — this is why it lives in the
+dashboard rather than something scriptable via curl), a manual
+"add an account" fallback for CSV-only history, and CSV import with
+column-mapping auto-detected from the file's own header row. Verified in
+a real headless browser (Playwright) end to end: create household → add
+person → link/add an account → import a CSV → see the transactions land
+correctly categorized.
+
 ### Deliberately not built yet
 
-- **Phase 4 (Dashboard):** the React/Vite SPA on Workers Assets. The API
-  it needs already exists.
+- **Phase 4, the rest of it**: Home (Ready to Assign + envelope list),
+  Transactions (list/inline-edit/split), Rules UI (PLAN.md §9) — the
+  Setup page above is the only page so far.
 - **Full intent parsing** (PLAN.md §5.4, §13 Q13): a reply that arrives
   with nothing open falls through silently rather than answering
   free-form questions like "how much on food this month?" — that's an
@@ -86,10 +99,12 @@ npm install
 
 ```
 npx wrangler d1 migrations apply curtisclan --local   # creates the local SQLite DB
+npm run build:dashboard                                 # builds dashboard/dist once
 npm run dev                                             # wrangler dev, http://localhost:8787
 ```
 
-`GET /health` confirms the Worker is up. From there:
+`GET /health` confirms the Worker is up; `/` serves the dashboard. From
+the terminal instead:
 
 ```
 curl -X POST localhost:8787/api/households -H 'content-type: application/json' \
@@ -100,6 +115,12 @@ curl -X POST localhost:8787/api/households -H 'content-type: application/json' \
 Webhook/queue/LLM code paths need their secrets (below) to do anything —
 without them they fail cleanly with a "missing required secret" error
 rather than doing nothing silently.
+
+**Working on the dashboard itself**: `npm --prefix dashboard run dev`
+starts Vite's dev server with hot reload, proxying `/api/*` to a
+`wrangler dev` you run separately on port 8787 (see `dashboard/vite.config.ts`).
+`npm run build:dashboard` from the repo root rebuilds `dashboard/dist` for
+`wrangler dev`/`deploy` to pick up — Vite doesn't watch it for you there.
 
 ### Tests / typecheck
 
@@ -139,8 +160,14 @@ npm run typecheck # tsc --noEmit
    ```
 4. **Deploy:**
    ```
-   npm run deploy
+   npm run deploy   # builds dashboard/dist, then wrangler deploy
    ```
+   If you're deploying via Cloudflare's **Workers Builds** Git integration
+   rather than running this locally, its configured *Build command*
+   (Cloudflare dashboard → your Worker → Settings → Builds) needs to run
+   `npm run build:dashboard` before `wrangler deploy` — a plain
+   `wrangler deploy` alone won't build the dashboard first, since
+   `wrangler` only uploads whatever's already sitting in `dashboard/dist`.
 5. **Register webhooks** against your deployed Worker URL:
    - **Plaid**: nothing to register up front — `POST /:householdId/plaid/link-token`
      sets the webhook URL per-item automatically to
@@ -172,6 +199,7 @@ npm run typecheck # tsc --noEmit
 
 ```
 migrations/             D1 schema (wrangler d1 migrations)
+dashboard/               Vite/React SPA, built to dashboard/dist and served as Workers Assets (see wrangler.jsonc)
 src/
   types.ts              Domain types mirroring the schema
   lib/                  Framework-free helpers: money, ids, crypto, CSV, merchant normalization, secrets

@@ -41,6 +41,15 @@
 
   "vars": {
     "ENVIRONMENT": "development"
+  },
+
+  // Dashboard (PLAN §9), built separately with `npm run build:dashboard`
+  // (see README) into dashboard/dist. Static files matching a request are
+  // served directly; anything that doesn't match (/api/*, /webhooks/*,
+  // /health) falls through to this Worker.
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./dashboard/dist"
   }
 
   // Secrets (Plaid client id/secret, Sendblue keys, Anthropic key, token
