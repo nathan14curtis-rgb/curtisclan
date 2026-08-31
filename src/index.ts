@@ -14,8 +14,12 @@ import { plaidRoute } from "./routes/plaid";
 import { plaidWebhookRoute } from "./routes/plaidWebhook";
 import { sendblueWebhookRoute } from "./routes/sendblueWebhook";
 import { handleQueueBatch } from "./queue/consumer";
+import { enqueueDailyDigest } from "./messaging/dailyDigest";
 import { enqueueNightlyReconciliation } from "./plaid/reconciliation";
 import type { MessageQueueMessage, TransactionQueueMessage } from "./lib/queueMessages";
+
+// Must match the second entry in wrangler.jsonc's triggers.crons exactly.
+const DAILY_DIGEST_CRON = "0 13 * * *";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -58,9 +62,16 @@ export default {
 
   queue: handleQueueBatch,
 
-  // Nightly reconciliation (PLAN §4.2: "webhooks... get dropped"). Cron
-  // schedule is set in wrangler.jsonc.
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  // Two cron schedules, both set in wrangler.jsonc — branch on which one
+  // fired rather than one handler per schedule, since ScheduledController
+  // only carries the cron expression, not a name.
+  async scheduled(controller: ScheduledController, env: Env): Promise<void> {
+    if (controller.cron === DAILY_DIGEST_CRON) {
+      const count = await enqueueDailyDigest(env);
+      console.log(`daily digest: enqueued for ${count} household(s)`);
+      return;
+    }
+    // Nightly reconciliation (PLAN §4.2: "webhooks... get dropped").
     const count = await enqueueNightlyReconciliation(env);
     console.log(`nightly reconciliation: enqueued sync for ${count} plaid item(s)`);
   },

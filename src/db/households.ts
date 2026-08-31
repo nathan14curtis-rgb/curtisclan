@@ -25,6 +25,14 @@ export async function createHousehold(
   return { id, name: input.name, timezone, group_chat_id: null, created_at: now, updated_at: now };
 }
 
+/** Every household on this deployment — the loop the nightly-cron-style
+ * morning digest runs over (src/messaging/dailyDigest.ts), same pattern as
+ * enqueueNightlyReconciliation looping every active Plaid item. */
+export async function listHouseholds(db: D1Database): Promise<Household[]> {
+  const { results } = await db.prepare(`SELECT * FROM household`).all<Household>();
+  return results;
+}
+
 export async function getHousehold(db: D1Database, id: string): Promise<Household> {
   const row = await db.prepare(`SELECT * FROM household WHERE id = ?`).bind(id).first<Household>();
   if (!row) throw new NotFoundError("household", id);

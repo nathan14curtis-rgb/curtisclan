@@ -1,10 +1,12 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type Anthropic from "@anthropic-ai/sdk";
 import { createHousehold, getHousehold } from "../src/db/households";
 import { createUser, verifyUserPhone } from "../src/db/users";
 import { createAccount } from "../src/db/accounts";
-import { applyCategorization, createTransaction, findRecentTransactionByMerchantSubstring } from "../src/db/transactions";
+import { applyCategorization, createTransaction, findRecentTransactionByMerchantSubstring, getTransaction } from "../src/db/transactions";
 import { listCategories } from "../src/db/categories";
+import { allocateToEnvelope, listEnvelopes } from "../src/db/envelopes";
 import { getLatestClarificationForTransaction } from "../src/db/clarifications";
 import { sendToHouseholdGroup } from "../src/messaging/groupChat";
 import { processInboundReply } from "../src/messaging/inboundProcessing";
@@ -114,5 +116,77 @@ describe("processInboundReply — 'fix' command is household-scoped", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.content).toContain("some place that never happened");
+  });
+});
+
+describe("processInboundReply — natural-language correction without 'fix'", () => {
+  it("recategorizes a recently auto-categorized transaction and confirms with the envelope's remaining balance", async () => {
+    const { household, nathan, checking } = await seedHousehold();
+    Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
+
+    const month = new Date().toISOString().slice(0, 7);
+    const categories = await listCategories(db, household.id);
+    const entertainment = categories.find((c) => c.name === "Entertainment")!;
+    const misc = categories.find((c) => c.name === "Miscellaneous")!;
+
+    const uber = await createTransaction(db, household.id, {
+      accountId: checking.id,
+      postedAt: `${month}-15`,
+      amountCents: -1200,
+      rawDescription: "UBER TRIP",
+      normalizedMerchant: "UBER",
+    });
+    // Simulates the cascade having already auto-filed it (method: 'llm'),
+    // same as what a daily digest would have reported that morning.
+    await applyCategorization(db, household.id, uber.id, { categoryId: entertainment.id, method: "llm", confidence: 0.6 });
+
+    const miscEnvelope = (await listEnvelopes(db, household.id)).find((e) => e.category_id === misc.id)!;
+    await allocateToEnvelope(db, household.id, { envelopeId: miscEnvelope.id, month, amountCents: 10000 });
+
+    // Anthropic's own SDK isn't fetch-mocked anywhere in this codebase —
+    // resolveReply already takes an injectable client for exactly this
+    // reason (see test/replyResolver.test.ts); processInboundReply's
+    // optional anthropicClient param follows the same pattern.
+    const fakeClient = {
+      messages: {
+        create: vi.fn().mockResolvedValue({
+          content: [
+            {
+              type: "tool_use",
+              id: "tu_1",
+              name: "resolve_clarifications",
+              input: {
+                matches: [{ transaction_id: uber.id, category_id: misc.id, memo: "business trip", confidence: 0.9, source_span: "the uber was for business" }],
+                unmatched_transaction_ids: [],
+                unresolved_text: "",
+              },
+            },
+          ],
+        }),
+      },
+    } as unknown as Anthropic;
+    const fetchMock = mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
+
+    // No "fix" prefix — this is exactly the digest reply UX: a plain
+    // correction referencing the merchant by name.
+    await processInboundReply(env, household.id, nathan.id, "actually, the uber was for business, not entertainment", fakeClient);
+
+    const updated = await getTransaction(db, household.id, uber.id);
+    expect(updated.category_id).toBe(misc.id);
+    expect(updated.memo).toBe("business trip");
+
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.content).toContain("Confirmed! $12.00 at UBER matched to Miscellaneous");
+    // $100 allocated - $12 spent = $88 left.
+    expect(body.content).toContain("$88 left this month");
+  });
+
+  it("does nothing when there's nothing open and nothing recently categorized to correct", async () => {
+    const { household, nathan } = await seedHousehold();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await processInboundReply(env, household.id, nathan.id, "the uber was for business");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

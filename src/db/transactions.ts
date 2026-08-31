@@ -190,6 +190,29 @@ export async function applyCategorization(
   return { ...existing, category_id: input.categoryId, memo: input.memo ?? existing.memo, updated_at: now };
 }
 
+/** Recently categorized transactions (auto or otherwise), most recent
+ * first — feeds both the morning digest (src/messaging/dailyDigest.ts)
+ * and the "reply without 'fix'" correction pool
+ * (src/messaging/inboundProcessing.ts), which needs a candidate list to
+ * match a free-text correction against even when nothing is still open. */
+export async function listRecentlyCategorizedTransactions(
+  db: D1Database,
+  householdId: string,
+  sinceIso: string,
+  limit = 25,
+): Promise<Transaction[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM "transaction"
+         WHERE household_id = ? AND category_id IS NOT NULL AND is_transfer = 0 AND excluded_from_budget = 0
+           AND updated_at >= ?
+         ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .bind(householdId, sinceIso, limit)
+    .all<Transaction>();
+  return results;
+}
+
 /** Excludes a transaction from every envelope-balance/spend total without
  * touching its category — for a reimbursed purchase, a transfer the
  * transfer-detector missed, or anything else that shouldn't count against
