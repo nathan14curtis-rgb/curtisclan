@@ -75,6 +75,10 @@ export async function categorizeTransaction(env: Env, householdId: string, trans
       .map((s) => ({ merchant: s.normalized_merchant ?? s.raw_description, amountCents: s.amount_cents, categoryId: s.category_id })),
   });
 
+  console.log(
+    `[categorize] ${transactionId} layer=${result.layer} confidence=${"confidence" in result ? result.confidence : "n/a"} categoryId=${result.categoryId ?? "none"} needsClarification=${result.needsClarification}`,
+  );
+
   if (result.categoryId) {
     await applyCategorization(env.DB, householdId, transactionId, {
       categoryId: result.categoryId,
@@ -90,16 +94,23 @@ export async function categorizeTransaction(env: Env, householdId: string, trans
   if (!result.needsClarification) return;
 
   const alreadyOpen = await getLatestClarificationForTransaction(env.DB, householdId, transactionId);
-  if (alreadyOpen && (alreadyOpen.status === "queued" || alreadyOpen.status === "sent")) return;
+  if (alreadyOpen && (alreadyOpen.status === "queued" || alreadyOpen.status === "sent")) {
+    console.log(`[categorize] ${transactionId} clarification already ${alreadyOpen.status} — skipping`);
+    return;
+  }
 
   const askee = await resolveAskee(env.DB, householdId, account);
-  if (!askee) return; // no verified phone yet — leaves this in the dashboard's needs-review queue instead
+  if (!askee) {
+    console.log(`[categorize] ${transactionId} needs clarification but nobody is verified yet — left for dashboard review`);
+    return;
+  }
 
   const clarification = await createClarification(env.DB, householdId, {
     transactionId,
     userId: askee.id,
     questionText: buildQuestionText(transaction.amount_cents, transaction.normalized_merchant, transaction.raw_description, account.name),
   });
+  console.log(`[categorize] ${transactionId} created clarification ${clarification.id}, asking user ${askee.id}`);
 
   const message: MessageQueueMessage = { type: "send_clarification", householdId, clarificationId: clarification.id };
   await env.MESSAGE_QUEUE.send(message);

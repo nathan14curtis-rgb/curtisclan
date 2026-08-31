@@ -39,17 +39,25 @@ export async function processSendClarification(
   requeue: (delaySeconds: number) => Promise<void>,
 ): Promise<void> {
   const clarification = await getClarification(env.DB, householdId, clarificationId);
-  if (clarification.status !== "queued") return; // redelivered after already being sent/answered — no-op
+  if (clarification.status !== "queued") {
+    console.log(`[send_clarification] ${clarificationId} already ${clarification.status} — skipping`);
+    return;
+  }
 
   const users = await listVerifiedUsersForHousehold(env.DB, householdId);
-  if (users.length === 0) return; // nobody verified yet — pipeline.ts only creates a clarification once resolveAskee found someone; defensive
+  if (users.length === 0) {
+    console.log(`[send_clarification] ${clarificationId} nobody verified — skipping`);
+    return;
+  }
 
   const delaySeconds = householdQuietDelaySeconds(users, new Date());
   if (delaySeconds > 0) {
+    console.log(`[send_clarification] ${clarificationId} within quiet hours — requeuing for ${delaySeconds}s`);
     await requeue(Math.min(delaySeconds, MAX_QUEUE_DELAY_SECONDS));
     return;
   }
 
   const { messageHandle } = await sendToHouseholdGroup(env, householdId, clarification.question_text ?? "What was this charge?");
+  console.log(`[send_clarification] ${clarificationId} sent, messageHandle=${messageHandle ?? "none"}`);
   if (messageHandle) await markClarificationSent(env.DB, clarification.id, messageHandle);
 }
