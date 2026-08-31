@@ -9,6 +9,9 @@ export type ClassificationMethod = "rule" | "memory" | "llm" | "human";
 export type AllocationSource = "income_assignment" | "envelope_move" | "correction";
 export type ClarificationStatus = "queued" | "sent" | "answered" | "timed_out";
 export type RuleSource = "user" | "ai_suggested";
+export type AccessLevel = "full" | "limited" | "view_only";
+export type AssetType = "property" | "vehicle" | "appliance" | "other";
+export type DocumentCategory = "insurance" | "warranty" | "identification" | "passwords";
 
 export interface Household {
   id: string;
@@ -31,6 +34,10 @@ export interface User {
   quiet_hours_start: string | null;
   quiet_hours_end: string | null;
   notification_prefs: string;
+  role: string | null;
+  access_level: AccessLevel;
+  weekly_allowance_cents: number | null;
+  note: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -132,6 +139,8 @@ export interface Transaction {
   excluded_from_budget: 0 | 1;
   split_parent_id: string | null;
   source: TransactionSource;
+  verified_by_user_id: string | null;
+  verified_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -201,6 +210,43 @@ export interface Rule {
   source: RuleSource;
   match_count: number;
   enabled: 0 | 1;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Asset {
+  id: string;
+  household_id: string;
+  name: string;
+  type: AssetType;
+  value_cents: number | null;
+  notes: string | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Document {
+  id: string;
+  household_id: string;
+  asset_id: string | null;
+  name: string;
+  category: DocumentCategory;
+  owner_user_id: string | null;
+  detail: string | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MaintenanceTask {
+  id: string;
+  household_id: string;
+  asset_id: string;
+  task: string;
+  due_date: string;
+  completed_at: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 }

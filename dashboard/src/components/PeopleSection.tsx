@@ -16,7 +16,7 @@ export function PeopleSection({ householdId, users, onChanged }: Props) {
     e.preventDefault();
     setError(null);
     try {
-      await api.createUser(householdId, name.trim());
+      await api.createUser(householdId, { name: name.trim() });
       setName("");
       await onChanged();
     } catch (err) {

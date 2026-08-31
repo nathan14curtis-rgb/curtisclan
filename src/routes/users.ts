@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
-import type { Env } from "../types";
-import { createUser, listUsers, verifyUserPhone } from "../db/users";
+import type { AccessLevel, Env } from "../types";
+import { createUser, listUsers, updateUser, verifyUserPhone } from "../db/users";
+
+const ACCESS_LEVELS: AccessLevel[] = ["full", "limited", "view_only"];
 
 export const usersRoute = new Hono<{ Bindings: Env }>();
 
@@ -11,10 +13,59 @@ usersRoute.get("/", async (c) => {
 });
 
 usersRoute.post("/", async (c) => {
-  const body = await c.req.json<{ name?: string; timezone?: string }>();
+  const body = await c.req.json<{
+    name?: string;
+    timezone?: string;
+    role?: string;
+    accessLevel?: string;
+    weeklyAllowanceCents?: number;
+    note?: string;
+  }>();
   if (!body.name) return c.json({ error: "name is required" }, 400);
-  const user = await createUser(c.env.DB, requireParam(c, "householdId"), { name: body.name, timezone: body.timezone });
+  if (body.accessLevel && !ACCESS_LEVELS.includes(body.accessLevel as AccessLevel)) {
+    return c.json({ error: `accessLevel must be one of ${ACCESS_LEVELS.join(", ")}` }, 400);
+  }
+  const user = await createUser(c.env.DB, requireParam(c, "householdId"), {
+    name: body.name,
+    timezone: body.timezone,
+    role: body.role,
+    accessLevel: body.accessLevel as AccessLevel | undefined,
+    weeklyAllowanceCents: body.weeklyAllowanceCents,
+    note: body.note,
+  });
   return c.json(user, 201);
+});
+
+// Member profile edit — the redesigned Members page's card fields.
+usersRoute.patch("/:userId", async (c) => {
+  const body = await c.req.json<{
+    name?: string;
+    timezone?: string;
+    role?: string | null;
+    accessLevel?: string;
+    weeklyAllowanceCents?: number | null;
+    note?: string | null;
+  }>();
+  if (body.accessLevel && !ACCESS_LEVELS.includes(body.accessLevel as AccessLevel)) {
+    return c.json({ error: `accessLevel must be one of ${ACCESS_LEVELS.join(", ")}` }, 400);
+  }
+  const update: {
+    name?: string;
+    timezone?: string;
+    role?: string | null;
+    accessLevel?: AccessLevel;
+    weeklyAllowanceCents?: number | null;
+    note?: string | null;
+  } = {};
+  if (body.name !== undefined) update.name = body.name;
+  if (body.timezone !== undefined) update.timezone = body.timezone;
+  if ("role" in body) update.role = body.role;
+  if (body.accessLevel !== undefined) update.accessLevel = body.accessLevel as AccessLevel;
+  if ("weeklyAllowanceCents" in body) update.weeklyAllowanceCents = body.weeklyAllowanceCents;
+  if ("note" in body) update.note = body.note;
+
+  const user = await updateUser(c.env.DB, requireParam(c, "householdId"), requireParam(c, "userId"), update);
+  return c.json(user);
 });
 
 // The Sendblue verification handshake (PLAN §5.0) completes out-of-band;

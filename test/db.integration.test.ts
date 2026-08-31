@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createHousehold } from "../src/db/households";
 import { createUser, verifyUserPhone } from "../src/db/users";
 import { createAccount, updateAccount } from "../src/db/accounts";
-import { archiveCategory, listCategories, renameCategory, unarchiveCategory } from "../src/db/categories";
+import { archiveCategory, createCategory, createEnvelopeForCategory, listCategories, renameCategory, unarchiveCategory } from "../src/db/categories";
 import { listEnvelopes, allocateToEnvelope, moveMoneyBetweenEnvelopes, getEnvelopeMonthSummary, updateEnvelope } from "../src/db/envelopes";
 import { applyCategorization, createTransaction, splitTransaction, listTransactions, setTransactionExcluded } from "../src/db/transactions";
 import { listClassifications } from "../src/db/classifications";
@@ -241,6 +241,46 @@ describe("CSV import", () => {
 
     const transactions = await listTransactions(db, household.id, { accountId: account.id });
     expect(transactions).toHaveLength(2);
+  });
+});
+
+describe("savings goals (envelope target_date)", () => {
+  // PLAN.md §8.5: a savings goal is not a separate table — it's a
+  // kind='savings' envelope with target_date set. routes/categories.ts's
+  // POST / handler forwards body.targetDate through to this exact call, so
+  // this pins down the db-layer half of "New goal" actually working.
+  it("createEnvelopeForCategory round-trips targetDate onto the envelope", async () => {
+    const { household } = await seedHousehold();
+    const category = await createCategory(db, household.id, { name: "New roof", kind: "savings" });
+    const envelope = await createEnvelopeForCategory(db, household.id, category, {
+      groupName: "Goals",
+      monthlyTargetCents: 1400000,
+      targetDate: "2027-06-01",
+    });
+    expect(envelope.target_date).toBe("2027-06-01");
+
+    const [reloaded] = (await listEnvelopes(db, household.id)).filter((e) => e.id === envelope.id);
+    expect(reloaded!.target_date).toBe("2027-06-01");
+  });
+
+  // Found in manual verification: an envelope created without a
+  // target_date (e.g. the default-taxonomy Savings envelopes every
+  // household starts with) had no way to become a goal after the fact —
+  // updateEnvelope silently ignored targetDate entirely.
+  it("updateEnvelope can set, and later clear, target_date on an existing envelope", async () => {
+    const { household } = await seedHousehold();
+    const category = await createCategory(db, household.id, { name: "Emergency Fund", kind: "savings" });
+    const envelope = await createEnvelopeForCategory(db, household.id, category, { groupName: "Goals" });
+    expect(envelope.target_date).toBeNull();
+
+    const withDate = await updateEnvelope(db, household.id, envelope.id, { targetDate: "2027-03-01" });
+    expect(withDate.target_date).toBe("2027-03-01");
+
+    const renamedOnly = await updateEnvelope(db, household.id, envelope.id, { groupName: "Savings Goals" });
+    expect(renamedOnly.target_date).toBe("2027-03-01"); // untouched — key omitted
+
+    const cleared = await updateEnvelope(db, household.id, envelope.id, { targetDate: null });
+    expect(cleared.target_date).toBeNull();
   });
 });
 

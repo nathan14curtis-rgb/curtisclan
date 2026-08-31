@@ -15,26 +15,29 @@ export async function getEnvelopeByCategory(db: D1Database, householdId: string,
 }
 
 /** Regrouping (e.g. into a "Bills" group_name for the dashboard's Bills
- * view) and adjusting the monthly target — the two things about an
- * envelope itself, as opposed to its category's name, that are worth
- * editing after creation. */
+ * view), adjusting the monthly target, and setting/clearing target_date —
+ * the things about an envelope itself, as opposed to its category's name,
+ * that are worth editing after creation. target_date is what turns a plain
+ * expense/savings envelope into a goal-style one (PLAN.md §8.5) after the
+ * fact, not just at creation via routes/categories.ts. */
 export async function updateEnvelope(
   db: D1Database,
   householdId: string,
   id: string,
-  input: { groupName?: string; monthlyTargetCents?: number | null },
+  input: { groupName?: string; monthlyTargetCents?: number | null; targetDate?: string | null },
 ): Promise<Envelope> {
   const existing = await getEnvelope(db, householdId, id);
   const groupName = input.groupName ?? existing.group_name;
   // Distinguish "omitted" (leave as-is) from "explicitly null" (clear the
   // target) — a plain `?? existing` can't tell those apart.
   const monthlyTargetCents = "monthlyTargetCents" in input ? (input.monthlyTargetCents ?? null) : existing.monthly_target_cents;
+  const targetDate = "targetDate" in input ? (input.targetDate ?? null) : existing.target_date;
   const now = nowIso();
   await db
-    .prepare(`UPDATE envelope SET group_name = ?, monthly_target_cents = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
-    .bind(groupName, monthlyTargetCents, now, id, householdId)
+    .prepare(`UPDATE envelope SET group_name = ?, monthly_target_cents = ?, target_date = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(groupName, monthlyTargetCents, targetDate, now, id, householdId)
     .run();
-  return { ...existing, group_name: groupName, monthly_target_cents: monthlyTargetCents, updated_at: now };
+  return { ...existing, group_name: groupName, monthly_target_cents: monthlyTargetCents, target_date: targetDate, updated_at: now };
 }
 
 export async function archiveEnvelopeForCategory(db: D1Database, householdId: string, categoryId: string): Promise<void> {
@@ -210,4 +213,72 @@ export async function getEnvelopeMonthSummary(
   const balanceCents = (cumulativeAlloc?.total ?? 0) + (cumulativeSpend?.total ?? 0);
 
   return { month, allocatedCents, spentCents, balanceCents };
+}
+
+/**
+ * Same identity as getEnvelopeMonthSummary, computed for every envelope in
+ * the household at once — four GROUP BY queries instead of four-per-envelope.
+ * The redesigned Overview page's envelope-fill chart needs every envelope's
+ * spend/planned ratio simultaneously, which makes the dashboard's existing
+ * per-envelope Promise.all fetch pattern (one HTTP round trip per envelope)
+ * meaningfully worse than it already was.
+ */
+export async function getEnvelopeMonthSummariesForHousehold(
+  db: D1Database,
+  householdId: string,
+  month: string,
+): Promise<Record<string, EnvelopeMonthSummary>> {
+  const envelopes = await listEnvelopes(db, householdId);
+
+  const [thisMonthAlloc, cumulativeAlloc, thisMonthSpend, cumulativeSpend] = await Promise.all([
+    db
+      .prepare(
+        `SELECT envelope_id, COALESCE(SUM(amount_cents), 0) AS total FROM allocation
+           WHERE household_id = ? AND month = ? GROUP BY envelope_id`,
+      )
+      .bind(householdId, month)
+      .all<{ envelope_id: string; total: number }>(),
+    db
+      .prepare(
+        `SELECT envelope_id, COALESCE(SUM(amount_cents), 0) AS total FROM allocation
+           WHERE household_id = ? AND month <= ? GROUP BY envelope_id`,
+      )
+      .bind(householdId, month)
+      .all<{ envelope_id: string; total: number }>(),
+    db
+      .prepare(
+        `SELECT e.id AS envelope_id, COALESCE(SUM(t.amount_cents), 0) AS total
+           FROM envelope e JOIN "transaction" t ON t.category_id = e.category_id
+           WHERE e.household_id = ? AND t.is_transfer = 0 AND t.excluded_from_budget = 0
+             AND strftime('%Y-%m', t.posted_at) = ?
+           GROUP BY e.id`,
+      )
+      .bind(householdId, month)
+      .all<{ envelope_id: string; total: number }>(),
+    db
+      .prepare(
+        `SELECT e.id AS envelope_id, COALESCE(SUM(t.amount_cents), 0) AS total
+           FROM envelope e JOIN "transaction" t ON t.category_id = e.category_id
+           WHERE e.household_id = ? AND t.is_transfer = 0 AND t.excluded_from_budget = 0
+             AND strftime('%Y-%m', t.posted_at) <= ?
+           GROUP BY e.id`,
+      )
+      .bind(householdId, month)
+      .all<{ envelope_id: string; total: number }>(),
+  ]);
+
+  const toMap = (rows: { envelope_id: string; total: number }[]) => new Map(rows.map((r) => [r.envelope_id, r.total]));
+  const thisMonthAllocByEnv = toMap(thisMonthAlloc.results);
+  const cumAllocByEnv = toMap(cumulativeAlloc.results);
+  const thisMonthSpendByEnv = toMap(thisMonthSpend.results);
+  const cumSpendByEnv = toMap(cumulativeSpend.results);
+
+  const summaries: Record<string, EnvelopeMonthSummary> = {};
+  for (const envelope of envelopes) {
+    const allocatedCents = thisMonthAllocByEnv.get(envelope.id) ?? 0;
+    const spentCents = -(thisMonthSpendByEnv.get(envelope.id) ?? 0) || 0;
+    const balanceCents = (cumAllocByEnv.get(envelope.id) ?? 0) + (cumSpendByEnv.get(envelope.id) ?? 0);
+    summaries[envelope.id] = { month, allocatedCents, spentCents, balanceCents };
+  }
+  return summaries;
 }

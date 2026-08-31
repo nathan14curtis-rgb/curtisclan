@@ -19,6 +19,7 @@ categoriesRoute.post("/", async (c) => {
     parentId?: string;
     groupName?: string;
     monthlyTargetCents?: number;
+    targetDate?: string;
   }>();
   if (!body.name) return c.json({ error: "name is required" }, 400);
   if (!body.kind || !CATEGORY_KINDS.includes(body.kind as CategoryKind)) {
@@ -39,6 +40,7 @@ categoriesRoute.post("/", async (c) => {
     const envelope = await createEnvelopeForCategory(c.env.DB, householdId, category, {
       groupName: body.groupName,
       monthlyTargetCents: body.monthlyTargetCents ?? null,
+      targetDate: body.targetDate ?? null,
     });
     return c.json({ category, envelope }, 201);
   }

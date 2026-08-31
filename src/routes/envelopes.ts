@@ -1,7 +1,14 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { Env } from "../types";
-import { allocateToEnvelope, getEnvelopeMonthSummary, listEnvelopes, moveMoneyBetweenEnvelopes, updateEnvelope } from "../db/envelopes";
+import {
+  allocateToEnvelope,
+  getEnvelopeMonthSummariesForHousehold,
+  getEnvelopeMonthSummary,
+  listEnvelopes,
+  moveMoneyBetweenEnvelopes,
+  updateEnvelope,
+} from "../db/envelopes";
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
 
@@ -12,11 +19,25 @@ envelopesRoute.get("/", async (c) => {
   return c.json(envelopes);
 });
 
+// Registered before "/:envelopeId" — Hono's router prioritizes a literal
+// path segment over a param segment regardless of registration order, but
+// this is still the right place for it to live: every envelope's summary
+// at once, for pages (the Overview envelope-fill chart) that need all of
+// them, instead of the per-envelope N+1 pattern the dashboard used before.
+envelopesRoute.get("/summary", async (c) => {
+  const month = c.req.query("month");
+  if (!month || !MONTH_RE.test(month)) return c.json({ error: "month query param must be 'YYYY-MM'" }, 400);
+  const summaries = await getEnvelopeMonthSummariesForHousehold(c.env.DB, requireParam(c, "householdId"), month);
+  return c.json(summaries);
+});
+
 // group_name (which powers the dashboard's Bills view — an envelope
-// grouped "Bills" instead of, say, "Everyday") and monthly_target_cents
-// are the two things worth editing about an envelope after creation.
+// grouped "Bills" instead of, say, "Everyday"), monthly_target_cents, and
+// target_date (turning an envelope into a goal after creation, not just
+// at creation time via routes/categories.ts) are what's worth editing
+// about an envelope after creation.
 envelopesRoute.patch("/:envelopeId", async (c) => {
-  const body = await c.req.json<{ groupName?: string; monthlyTargetCents?: number | null }>();
+  const body = await c.req.json<{ groupName?: string; monthlyTargetCents?: number | null; targetDate?: string | null }>();
   const envelope = await updateEnvelope(c.env.DB, requireParam(c, "householdId"), requireParam(c, "envelopeId"), body);
   return c.json(envelope);
 });
