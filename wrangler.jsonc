@@ -43,6 +43,21 @@
     "ENVIRONMENT": "development"
   },
 
+  // Workers Logs (Cloudflare dashboard → Workers → curtisclan → Logs):
+  // persists console.log/error output and invocation metadata server-side
+  // instead of only being visible while `wrangler tail` is attached live.
+  // head_sampling_rate: 1 means log every invocation (fine at this traffic
+  // volume; lower it if usage grows and log volume gets noisy/costly).
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    }
+  },
+
   // Dashboard (PLAN §9), built into dashboard/dist. Static files matching
   // a request are served directly; anything that doesn't match
   // (/api/*, /webhooks/*, /health) falls through to this Worker.
