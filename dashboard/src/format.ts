@@ -6,3 +6,11 @@ export function formatCents(cents: number): string {
 export function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
+
+/** Days remaining in the current month, counting today — matches the
+ * mockup's "Month status" sidebar widget ("N days left ... before the
+ * 1st"). */
+export function daysLeftInMonth(now = new Date()): number {
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return lastDay - now.getDate() + 1;
+}

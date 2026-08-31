@@ -12,7 +12,10 @@ interface Props {
 
 const month = currentMonth();
 
-export function HomePage({ householdId, categories, envelopes, transactions, onGoToTransactions }: Props) {
+// TODO(task: Overview + charts): replaced with the pace/pie chart redesign
+// once EnvelopesPage/BillsPage/TransactionsPage land — see the plan's
+// build-order note that Overview depends on both new chart components.
+export function OverviewPage({ householdId, categories, envelopes, transactions, onGoToTransactions }: Props) {
   const [summaries, setSummaries] = useState<Record<string, EnvelopeMonthSummary>>({});
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const activeEnvelopes = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
@@ -46,11 +49,8 @@ export function HomePage({ householdId, categories, envelopes, transactions, onG
   }, [activeEnvelopes, summaries]);
 
   return (
-    <>
-      <h1>Home</h1>
-      <p className="subtitle">Where things stand this month.</p>
-
-      <section className="card">
+    <div className="section">
+      <section className="card card--emphasis card--padded">
         <div className="stat-row">
           <div className="stat">
             <span className="label">Left across all envelopes</span>
@@ -72,7 +72,7 @@ export function HomePage({ householdId, categories, envelopes, transactions, onG
         )}
       </section>
 
-      <section className="card">
+      <section className="card card--padded">
         <h2>By group</h2>
         <ul className="list">
           {byGroup.map(([groupName, g]) => (
@@ -89,7 +89,7 @@ export function HomePage({ householdId, categories, envelopes, transactions, onG
         </ul>
       </section>
 
-      <section className="card">
+      <section className="card card--padded">
         <h2>Recent activity</h2>
         <ul className="list">
           {transactions.slice(0, 8).map((t) => {
@@ -113,6 +113,6 @@ export function HomePage({ householdId, categories, envelopes, transactions, onG
           )}
         </ul>
       </section>
-    </>
+    </div>
   );
 }
