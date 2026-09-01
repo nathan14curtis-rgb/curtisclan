@@ -106,12 +106,24 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
       .map(([date, rows]) => ({
         date,
         rows,
-        netCents: rows.reduce((sum, t) => sum + t.amount_cents, 0),
+        // A transfer's two legs often post on different days (e.g. a card
+        // payment initiated one day, credited to the card two days later)
+        // — excluded here for the same reason as outCents/inCents below:
+        // a lone unmatched leg would otherwise skew that day's net even
+        // though no money actually left the household.
+        netCents: rows.filter((t) => !t.is_transfer).reduce((sum, t) => sum + t.amount_cents, 0),
       }));
   }, [filtered]);
 
-  const outCents = filtered.filter((t) => t.amount_cents < 0).reduce((sum, t) => sum - t.amount_cents, 0);
-  const inCents = filtered.filter((t) => t.amount_cents > 0).reduce((sum, t) => sum + t.amount_cents, 0);
+  // A transfer between two of the household's own accounts (a credit card
+  // payment, a savings sweep) shows up twice — once as money leaving one
+  // account, once as money landing in the other — so it must never count
+  // toward these headline totals or it silently doubles them (a $2,000
+  // card payment reads as $2,000 more of both spend and income that never
+  // actually happened).
+  const nonTransferFiltered = useMemo(() => filtered.filter((t) => !t.is_transfer), [filtered]);
+  const outCents = nonTransferFiltered.filter((t) => t.amount_cents < 0).reduce((sum, t) => sum - t.amount_cents, 0);
+  const inCents = nonTransferFiltered.filter((t) => t.amount_cents > 0).reduce((sum, t) => sum + t.amount_cents, 0);
   const uncategorizedCount = filtered.filter((t) => !t.category_id && !t.is_transfer).length;
 
   async function setCategory(transactionId: string, categoryId: string) {
