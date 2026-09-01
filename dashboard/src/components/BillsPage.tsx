@@ -88,12 +88,228 @@ function ConfirmPatternForm({
   );
 }
 
+type WizardStep = 1 | 2 | 3;
+
+/**
+ * "Add recurring" — replaces the old flat "Add a bill" form. Three steps:
+ * bill or income, pick (or type) the merchant + day-of-month pattern to
+ * auto-match future transactions, then the category and amount. Creates
+ * the pattern straight into 'confirmed' (POST .../recurring-patterns) —
+ * a person just built it by hand, there's nothing to review.
+ */
+function AddRecurringWizard({
+  categories,
+  transactions,
+  onCreate,
+  onCancel,
+}: {
+  categories: Category[];
+  transactions: Transaction[];
+  onCreate: (input: {
+    merchantPattern: string;
+    kind: "expense" | "income";
+    dayOfMonth: number;
+    dayTolerance: number;
+    categoryId?: string;
+    newCategoryName?: string;
+    monthlyTargetCents?: number;
+  }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [step, setStep] = useState<WizardStep>(1);
+  const [kind, setKind] = useState<"expense" | "income" | null>(null);
+  const [search, setSearch] = useState("");
+  const [merchantPattern, setMerchantPattern] = useState("");
+  const [dayOfMonth, setDayOfMonth] = useState("");
+  const [dayTolerance, setDayTolerance] = useState("4");
+  const [categoryMode, setCategoryMode] = useState<"new" | "existing">("new");
+  const [categoryId, setCategoryId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [monthlyTarget, setMonthlyTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const matchingCategories = useMemo(() => categories.filter((c) => !c.archived_at && c.kind === kind), [categories, kind]);
+
+  const searchResults = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle || !kind) return [];
+    const wantIncome = kind === "income";
+    const seenMerchants = new Set<string>();
+    const results: Transaction[] = [];
+    for (const t of transactions) {
+      if (t.is_transfer) continue;
+      if (wantIncome ? t.amount_cents <= 0 : t.amount_cents >= 0) continue;
+      const merchant = t.normalized_merchant ?? t.raw_description;
+      if (!merchant.toLowerCase().includes(needle)) continue;
+      if (seenMerchants.has(merchant)) continue;
+      seenMerchants.add(merchant);
+      results.push(t);
+      if (results.length >= 8) break;
+    }
+    return results;
+  }, [search, kind, transactions]);
+
+  function pickTransaction(t: Transaction) {
+    setMerchantPattern(t.normalized_merchant ?? t.raw_description);
+    setDayOfMonth(String(Number(t.posted_at.slice(8, 10))));
+  }
+
+  async function submit() {
+    if (!kind || !merchantPattern.trim() || !dayOfMonth) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onCreate({
+        merchantPattern: merchantPattern.trim(),
+        kind,
+        dayOfMonth: Number(dayOfMonth),
+        dayTolerance: Number(dayTolerance) || 4,
+        categoryId: categoryMode === "existing" ? categoryId : undefined,
+        newCategoryName: categoryMode === "new" ? newName.trim() : undefined,
+        monthlyTargetCents: kind === "expense" && monthlyTarget.trim() ? Math.round(Number(monthlyTarget) * 100) : undefined,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="card card--padded" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <h2 style={{ margin: 0 }}>Add recurring — step {step} of 3</h2>
+        <button type="button" className="secondary" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+
+      {step === 1 && (
+        <div className="row">
+          <button
+            type="button"
+            className={kind === "expense" ? "" : "secondary"}
+            onClick={() => {
+              setKind("expense");
+              setStep(2);
+            }}
+          >
+            Bill (money out)
+          </button>
+          <button
+            type="button"
+            className={kind === "income" ? "" : "secondary"}
+            onClick={() => {
+              setKind("income");
+              setStep(2);
+            }}
+          >
+            Income (money in)
+          </button>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="section" style={{ gap: 12 }}>
+          <div className="field">
+            <label htmlFor="rw-search">Search transactions to auto-fill the pattern</label>
+            <input id="rw-search" type="text" placeholder="e.g. Lehi City, Netflix…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
+          {searchResults.length > 0 && (
+            <div className="row-list">
+              {searchResults.map((t) => (
+                <div className="row-item" key={t.id} style={{ cursor: "pointer" }} onClick={() => pickTransaction(t)}>
+                  <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                    <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
+                    <span className="row-meta">{t.posted_at}</span>
+                  </div>
+                  <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
+                    {formatCents(t.amount_cents)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="row">
+            <div className="field" style={{ flex: 1 }}>
+              <label htmlFor="rw-merchant">Merchant pattern (matches any transaction containing this text)</label>
+              <input id="rw-merchant" type="text" value={merchantPattern} onChange={(e) => setMerchantPattern(e.target.value)} required />
+            </div>
+          </div>
+          <div className="row">
+            <div className="field">
+              <label htmlFor="rw-day">Day of month</label>
+              <input id="rw-day" type="number" min={1} max={31} value={dayOfMonth} onChange={(e) => setDayOfMonth(e.target.value)} style={{ width: 90 }} required />
+            </div>
+            <div className="field">
+              <label htmlFor="rw-tolerance">± days</label>
+              <input id="rw-tolerance" type="number" min={0} max={15} value={dayTolerance} onChange={(e) => setDayTolerance(e.target.value)} style={{ width: 90 }} />
+            </div>
+          </div>
+          <div className="row">
+            <button type="button" className="secondary" onClick={() => setStep(1)}>
+              Back
+            </button>
+            <button type="button" onClick={() => setStep(3)} disabled={!merchantPattern.trim() || !dayOfMonth}>
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="section" style={{ gap: 12 }}>
+          <div className="row">
+            <select value={categoryMode} onChange={(e) => setCategoryMode(e.target.value as "new" | "existing")}>
+              <option value="new">New category</option>
+              <option value="existing">Existing category</option>
+            </select>
+            {categoryMode === "new" ? (
+              <input type="text" placeholder="Category name" value={newName} onChange={(e) => setNewName(e.target.value)} style={{ flex: 1 }} required />
+            ) : (
+              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required>
+                <option value="" disabled>
+                  Choose…
+                </option>
+                {matchingCategories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          {kind === "expense" && (
+            <div className="field" style={{ maxWidth: 220 }}>
+              <label htmlFor="rw-amount">Monthly amount budgeted $</label>
+              <input id="rw-amount" type="text" inputMode="decimal" value={monthlyTarget} onChange={(e) => setMonthlyTarget(e.target.value)} />
+            </div>
+          )}
+          <div className="row">
+            <button type="button" className="secondary" onClick={() => setStep(2)}>
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy || (categoryMode === "new" ? !newName.trim() : !categoryId)}
+            >
+              {busy ? "Adding…" : "Add recurring"}
+            </button>
+          </div>
+          {error && <p className="error">{error}</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function BillsPage({ householdId, categories, envelopes, envelopeSummaries, transactions, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
-  const [newName, setNewName] = useState("");
-  const [newTarget, setNewTarget] = useState("");
   const [patterns, setPatterns] = useState<RecurringPattern[]>([]);
   const [detecting, setDetecting] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const bills = useMemo(
@@ -133,22 +349,18 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
     return totals;
   }, [transactions, month]);
 
-  async function addBill(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    try {
-      await api.createCategory(householdId, {
-        name: newName.trim(),
-        kind: "expense",
-        groupName: "Bills",
-        monthlyTargetCents: newTarget.trim() ? Math.round(Number(newTarget) * 100) : undefined,
-      });
-      setNewName("");
-      setNewTarget("");
-      await onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add bill");
-    }
+  async function createRecurring(input: {
+    merchantPattern: string;
+    kind: "expense" | "income";
+    dayOfMonth: number;
+    dayTolerance: number;
+    categoryId?: string;
+    newCategoryName?: string;
+    monthlyTargetCents?: number;
+  }) {
+    await api.createRecurringPattern(householdId, input);
+    setShowWizard(false);
+    await Promise.all([refreshPatterns(), onChanged()]);
   }
 
   async function detect() {
@@ -196,7 +408,14 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
         <button className="secondary" type="button" onClick={detect} disabled={detecting}>
           {detecting ? "Looking…" : "AI Find Bills"}
         </button>
+        <button type="button" onClick={() => setShowWizard(true)}>
+          Add recurring
+        </button>
       </div>
+
+      {showWizard && (
+        <AddRecurringWizard categories={categories} transactions={transactions} onCreate={createRecurring} onCancel={() => setShowWizard(false)} />
+      )}
 
       {suggested.length > 0 && (
         <section className="section" style={{ gap: 12 }}>
@@ -267,39 +486,21 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
               <div className="row-item" key={bill.id}>
                 <div className="row-figure" style={{ flex: "1 1 auto" }}>
                   <span className="row-title">{category?.name ?? "Unknown bill"}</span>
-                  {summary && <span className="row-meta">{formatCents(summary.spentCents)} spent this month</span>}
+                  <span className="row-meta">{bill.monthly_target_cents !== null ? `${formatCents(bill.monthly_target_cents)} budgeted / mo` : "No monthly amount set"}</span>
                 </div>
                 <span className={STATUS_BADGE_CLASS[status]}>{status}</span>
                 <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
-                  {bill.monthly_target_cents !== null ? formatCents(bill.monthly_target_cents) : "—"}
+                  {summary ? formatCents(summary.spentCents) : formatCents(0)} spent
                 </span>
               </div>
             );
           })}
           {bills.length === 0 && (
             <div className="row-item">
-              <span className="hint">No bills yet — group an envelope into "Bills" from Spending Plan, or add one below.</span>
+              <span className="hint">No bills yet — use "Add recurring" above, or group an envelope into "Bills" from Spending Plan.</span>
             </div>
           )}
         </div>
-      </section>
-
-      <section className="card card--padded">
-        <h2>Add a bill</h2>
-        <form onSubmit={addBill}>
-          <div className="row">
-            <input type="text" placeholder="Name (e.g. Mortgage)" value={newName} onChange={(e) => setNewName(e.target.value)} required style={{ flex: 1 }} />
-            <input
-              type="text"
-              inputMode="decimal"
-              placeholder="Monthly amount $"
-              value={newTarget}
-              onChange={(e) => setNewTarget(e.target.value)}
-              style={{ width: 180 }}
-            />
-            <button type="submit">Add</button>
-          </div>
-        </form>
       </section>
 
       {error && <p className="error">{error}</p>}

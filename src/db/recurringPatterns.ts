@@ -130,6 +130,42 @@ export async function detectRecurringPatterns(db: D1Database, householdId: strin
   return created;
 }
 
+/**
+ * The "Add recurring" wizard's write path — a pattern built by hand from a
+ * picked transaction (or typed in directly), already pointed at a
+ * category, so it's created straight into 'confirmed' rather than going
+ * through the detector's 'suggested' stage first.
+ */
+export async function createConfirmedRecurringPattern(
+  db: D1Database,
+  householdId: string,
+  input: { categoryId: string; merchantPattern: string; kind: RecurringPatternKind; dayOfMonth: number; dayTolerance?: number },
+): Promise<RecurringPattern> {
+  const id = newId("rpat");
+  const now = nowIso();
+  const dayTolerance = input.dayTolerance ?? DEFAULT_DAY_TOLERANCE;
+  await db
+    .prepare(
+      `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, day_of_month, day_tolerance, status, sample_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 0, ?, ?)`,
+    )
+    .bind(id, householdId, input.categoryId, input.merchantPattern.trim().toUpperCase(), input.kind, input.dayOfMonth, dayTolerance, now, now)
+    .run();
+  return {
+    id,
+    household_id: householdId,
+    category_id: input.categoryId,
+    merchant_pattern: input.merchantPattern.trim().toUpperCase(),
+    kind: input.kind,
+    day_of_month: input.dayOfMonth,
+    day_tolerance: dayTolerance,
+    status: "confirmed",
+    sample_count: 0,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
 export async function confirmRecurringPattern(db: D1Database, householdId: string, id: string, categoryId: string): Promise<RecurringPattern> {
   const now = nowIso();
   await db
