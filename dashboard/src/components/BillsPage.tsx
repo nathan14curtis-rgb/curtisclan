@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { api, type Category, type Envelope, type EnvelopeMonthSummary, type RecurringPattern, type Transaction } from "../api";
+import { api, ApiError, type Category, type Envelope, type EnvelopeMonthSummary, type RecurringPattern, type Transaction } from "../api";
 import { formatCents, currentMonth } from "../format";
 
 interface Props {
@@ -100,9 +100,18 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
     () => envelopes.filter((e) => !e.archived_at && e.group_name.toLowerCase() === "bills"),
     [envelopes],
   );
-  const committedCents = useMemo(() => bills.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [bills]);
 
-  const refreshPatterns = async () => setPatterns(await api.listRecurringPatterns(householdId));
+  const refreshPatterns = async () => {
+    try {
+      setPatterns(await api.listRecurringPatterns(householdId));
+    } catch (err) {
+      // A missing recurring_pattern table (migration 0006 not yet applied
+      // on this deployment) shouldn't take the whole page down — bills and
+      // add-a-bill still work without it, so just leave the suggested/
+      // income sections empty rather than crashing the page.
+      console.error("Failed to load recurring patterns:", err);
+    }
+  };
   useEffect(() => {
     refreshPatterns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -149,7 +158,13 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
       await api.detectRecurringPatterns(householdId);
       await refreshPatterns();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to look for recurring patterns");
+      setError(
+        err instanceof ApiError && err.status === 500
+          ? "The recurring-bill detector isn't set up on this deployment yet — the database migration for it (0006_recurring_patterns.sql) needs to be applied. Run `npm run db:migrate:remote`."
+          : err instanceof Error
+            ? err.message
+            : "Failed to look for recurring patterns",
+      );
     } finally {
       setDetecting(false);
     }
@@ -177,16 +192,9 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
 
   return (
     <div className="section">
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <div className="card card--emphasis card--padded stat-tile" style={{ maxWidth: 320, marginBottom: 0 }}>
-          <span className="label">Committed this month</span>
-          <span className="figure">{formatCents(committedCents)}</span>
-          <span className="detail">
-            {bills.length} recurring bill{bills.length === 1 ? "" : "s"}.
-          </span>
-        </div>
+      <div className="row" style={{ justifyContent: "flex-end" }}>
         <button className="secondary" type="button" onClick={detect} disabled={detecting}>
-          {detecting ? "Looking…" : "Suggest recurring items"}
+          {detecting ? "Looking…" : "AI Find Bills"}
         </button>
       </div>
 
@@ -218,6 +226,36 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
 
       <section className="section" style={{ gap: 12 }}>
         <h2 className="section-title" style={{ fontSize: 22 }}>
+          Income
+        </h2>
+        <div className="row-list">
+          {confirmedIncome.map((p) => {
+            const category = categoryById.get(p.category_id!);
+            return (
+              <div className="row-item" key={p.id}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{category?.name ?? p.merchant_pattern}</span>
+                  <span className="row-meta">
+                    {p.merchant_pattern} · around the {p.day_of_month}
+                    {DAY_SUFFIX(p.day_of_month)}
+                  </span>
+                </div>
+                <span className="money positive" style={{ minWidth: 96, textAlign: "right" }}>
+                  {formatCents(incomeThisMonthByCategory.get(p.category_id!) ?? 0)}
+                </span>
+              </div>
+            );
+          })}
+          {confirmedIncome.length === 0 && (
+            <div className="row-item">
+              <span className="hint">No recurring income confirmed yet — check "Suggested" above once a paycheck or deposit has repeated a few times.</span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="section" style={{ gap: 12 }}>
+        <h2 className="section-title" style={{ fontSize: 22 }}>
           Bills
         </h2>
         <div className="row-list">
@@ -241,36 +279,6 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
           {bills.length === 0 && (
             <div className="row-item">
               <span className="hint">No bills yet — group an envelope into "Bills" from Spending Plan, or add one below.</span>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="section" style={{ gap: 12 }}>
-        <h2 className="section-title" style={{ fontSize: 22 }}>
-          Recurring income
-        </h2>
-        <div className="row-list">
-          {confirmedIncome.map((p) => {
-            const category = categoryById.get(p.category_id!);
-            return (
-              <div className="row-item" key={p.id}>
-                <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                  <span className="row-title">{category?.name ?? p.merchant_pattern}</span>
-                  <span className="row-meta">
-                    {p.merchant_pattern} · around the {p.day_of_month}
-                    {DAY_SUFFIX(p.day_of_month)}
-                  </span>
-                </div>
-                <span className="money positive" style={{ minWidth: 96, textAlign: "right" }}>
-                  {formatCents(incomeThisMonthByCategory.get(p.category_id!) ?? 0)}
-                </span>
-              </div>
-            );
-          })}
-          {confirmedIncome.length === 0 && (
-            <div className="row-item">
-              <span className="hint">No recurring income confirmed yet — check "Suggested" above once a paycheck or deposit has repeated a few times.</span>
             </div>
           )}
         </div>

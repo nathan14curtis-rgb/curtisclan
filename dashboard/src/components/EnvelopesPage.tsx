@@ -9,7 +9,6 @@ interface Props {
   envelopes: Envelope[];
   envelopeSummaries: Record<string, EnvelopeMonthSummary>;
   transactions: Transaction[];
-  readyToAssignCents: number;
   onChanged: () => Promise<void>;
   onTransactionsChanged: () => Promise<void>;
 }
@@ -131,7 +130,7 @@ function EnvelopeDrilldown({
   );
 }
 
-export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, transactions, readyToAssignCents, onChanged, onTransactionsChanged }: Props) {
+export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, transactions, onChanged, onTransactionsChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newKind, setNewKind] = useState<"expense" | "savings">("expense");
@@ -143,15 +142,39 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const [suggestChecked, setSuggestChecked] = useState<Record<number, boolean>>({});
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
-  const visible = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
+  // Bills live on the Recurring page now — this page ("Spending Plan") is
+  // everything else, so an envelope's target doesn't get double-counted
+  // between the two pages' "allocated" figures.
+  const visible = useMemo(() => envelopes.filter((e) => !e.archived_at && e.group_name.toLowerCase() !== "bills"), [envelopes]);
+  const bills = useMemo(() => envelopes.filter((e) => !e.archived_at && e.group_name.toLowerCase() === "bills"), [envelopes]);
 
-  const allocatedCents = useMemo(() => visible.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [visible]);
-  const needingAttention = useMemo(
-    () => visible.filter((e) => envelopeStatus(e, envelopeSummaries[e.id]) !== "on track").length,
-    [visible, envelopeSummaries],
+  const allocatedForSpendCents = useMemo(
+    () => visible.filter((e) => categoryById.get(e.category_id)?.kind === "expense").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
+    [visible, categoryById],
   );
+  const allocatedForGoalsCents = useMemo(
+    () => visible.filter((e) => categoryById.get(e.category_id)?.kind === "savings").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
+    [visible, categoryById],
+  );
+  const billsCommittedCents = useMemo(() => bills.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [bills]);
+  const allocatedCents = allocatedForSpendCents + allocatedForGoalsCents;
+
+  // What's actually available to plan with: recurring/actual income this
+  // month, minus what bills already claim, minus what's already allocated
+  // here — not a bank-balance figure (that lives in the sidebar's "safe to
+  // spend"), just "how much of my income has nowhere assigned yet."
+  const month = currentMonth();
+  const incomeThisMonthCents = useMemo(
+    () =>
+      transactions
+        .filter((t) => !t.is_transfer && !t.excluded_from_budget && t.category_id && categoryById.get(t.category_id)?.kind === "income" && t.posted_at.startsWith(month))
+        .reduce((sum, t) => sum + t.amount_cents, 0),
+    [transactions, categoryById, month],
+  );
+  const unallocatedCents = incomeThisMonthCents - billsCommittedCents - allocatedCents;
 
   const grouped = useMemo(() => {
     const byGroup = new Map<string, Envelope[]>();
@@ -232,11 +255,31 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
     }
   }
 
-  async function createSelectedSuggestions() {
+  // A full rebuild, not "add whatever's new" — archives every current
+  // non-Bill category (Bills stays put; it's a separate page's concern now)
+  // before creating the checked suggestions, so the spending plan actually
+  // matches what was reviewed instead of accumulating both old and new.
+  async function rebuildFromSuggestions() {
     if (!suggestions) return;
+    const toCreate = suggestions.filter((_, i) => suggestChecked[i]);
+    // visible already excludes Bills-grouped envelopes and archived ones —
+    // its category ids are exactly "this page's" categories, the ones a
+    // rebuild should replace.
+    const visibleCategoryIds = new Set(visible.map((e) => e.category_id));
+    const toArchive = categories.filter((c) => visibleCategoryIds.has(c.id));
+    if (
+      !window.confirm(
+        `This replaces your current spending plan: ${toArchive.length} existing categor${toArchive.length === 1 ? "y" : "ies"} will be archived, then ${toCreate.length} new one${toCreate.length === 1 ? "" : "s"} created. Bills are not affected. Continue?`,
+      )
+    ) {
+      return;
+    }
     setSuggestError(null);
+    setRebuilding(true);
     try {
-      const toCreate = suggestions.filter((_, i) => suggestChecked[i]);
+      for (const c of toArchive) {
+        await api.archiveCategory(householdId, c.id);
+      }
       for (const s of toCreate) {
         await api.createCategory(householdId, {
           name: s.name,
@@ -248,7 +291,9 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
       setSuggestions(null);
       await onChanged();
     } catch (err) {
-      setSuggestError(err instanceof Error ? err.message : "Failed to create categories");
+      setSuggestError(err instanceof Error ? err.message : "Failed to rebuild the spending plan");
+    } finally {
+      setRebuilding(false);
     }
   }
 
@@ -256,19 +301,19 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
     <div className="section">
       <div className="grid-3">
         <div className="card card--emphasis card--padded stat-tile">
-          <span className="label">Allocated</span>
-          <span className="figure">{formatCents(allocatedCents)}</span>
-          <span className="detail">Across {visible.length} envelope{visible.length === 1 ? "" : "s"}.</span>
-        </div>
-        <div className="card card--padded stat-tile">
-          <span className="label">Unassigned</span>
-          <span className="figure">{formatCents(Math.max(0, readyToAssignCents))}</span>
-          <span className="detail">Ready to assign into an envelope.</span>
+          <span className="label">Allocated for spend</span>
+          <span className="figure">{formatCents(allocatedForSpendCents)}</span>
+          <span className="detail">Everyday envelopes, not counting Bills.</span>
         </div>
         <div className="card card--emphasis card--padded stat-tile">
-          <span className="label">Needs attention</span>
-          <span className="figure">{needingAttention}</span>
-          <span className="detail">Tight or over budget this month.</span>
+          <span className="label">Allocated for goals</span>
+          <span className="figure">{formatCents(allocatedForGoalsCents)}</span>
+          <span className="detail">Savings envelopes with a target.</span>
+        </div>
+        <div className="card card--padded stat-tile">
+          <span className="label">Unallocated</span>
+          <span className="figure">{formatCents(unallocatedCents)}</span>
+          <span className="detail">This month's income, minus Bills and everything allocated above.</span>
         </div>
       </div>
 
@@ -375,7 +420,7 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
 
       <section className="card card--padded">
         <div className="row" style={{ justifyContent: "space-between" }}>
-          <h2 style={{ margin: 0 }}>Suggest categories with AI</h2>
+          <h2 style={{ margin: 0 }}>Rebuild spending plan with AI</h2>
           <button type="button" className="secondary" onClick={loadSuggestions} disabled={loadingSuggestions}>
             {loadingSuggestions ? "Thinking…" : "Suggest categories"}
           </button>
@@ -386,6 +431,9 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
               <p className="hint">Nothing to suggest — your existing categories already cover your recent activity.</p>
             ) : (
               <>
+                <p className="hint" style={{ margin: 0 }}>
+                  Checking "Rebuild" archives every category currently on this page and replaces it with what's checked below. Bills are not affected.
+                </p>
                 <div className="row-list">
                   {suggestions.map((s, i) => (
                     <div className="row-item" key={`${s.name}-${i}`}>
@@ -402,10 +450,10 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
                   ))}
                 </div>
                 <div className="row">
-                  <button type="button" onClick={createSelectedSuggestions}>
-                    Create selected
+                  <button type="button" onClick={rebuildFromSuggestions} disabled={rebuilding}>
+                    {rebuilding ? "Rebuilding…" : "Rebuild spending plan"}
                   </button>
-                  <button type="button" className="secondary" onClick={() => setSuggestions(null)}>
+                  <button type="button" className="secondary" onClick={() => setSuggestions(null)} disabled={rebuilding}>
                     Discard
                   </button>
                 </div>

@@ -68,7 +68,7 @@ export function getPageHead(view: string, ctx: PageHeadContext): PageHead {
         sectionLabel: "Recurring",
         title: "Recurring",
         subtitle: `${ctx.billsCount} recurring item${ctx.billsCount === 1 ? "" : "s"}, ${money(ctx.billsCommittedCents)} committed this month.`,
-        secondaryCta: "Payment methods",
+        secondaryCta: "",
         primaryCta: "Add a bill",
       };
     case "Goals":

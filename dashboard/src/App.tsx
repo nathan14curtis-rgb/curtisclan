@@ -319,7 +319,6 @@ export function App() {
             envelopes={envelopes}
             envelopeSummaries={envelopeSummaries}
             transactions={transactions}
-            readyToAssignCents={readyToAssignCents}
             onChanged={refreshCategoriesAndEnvelopes}
             onTransactionsChanged={refreshTransactions}
           />
