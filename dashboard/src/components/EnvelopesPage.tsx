@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { api, type Category, type Envelope, type EnvelopeMonthSummary, type Transaction } from "../api";
+import { api, type Category, type CategorySuggestion, type Envelope, type EnvelopeMonthSummary, type Transaction } from "../api";
 import { formatCents, currentMonth } from "../format";
 import { envelopeStatus, STATUS_BADGE_CLASS } from "../envelopeStatus";
 
@@ -139,6 +139,10 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const [newTarget, setNewTarget] = useState("");
   const [editing, setEditing] = useState<Record<string, { groupName: string; target: string; targetDate: string }>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<CategorySuggestion[] | null>(null);
+  const [suggestChecked, setSuggestChecked] = useState<Record<number, boolean>>({});
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const visible = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
@@ -211,6 +215,40 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
       await onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to add category");
+    }
+  }
+
+  async function loadSuggestions() {
+    setSuggestError(null);
+    setLoadingSuggestions(true);
+    try {
+      const results = await api.suggestCategories(householdId);
+      setSuggestions(results);
+      setSuggestChecked(Object.fromEntries(results.map((_, i) => [i, true])));
+    } catch (err) {
+      setSuggestError(err instanceof Error ? err.message : "Failed to get suggestions");
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }
+
+  async function createSelectedSuggestions() {
+    if (!suggestions) return;
+    setSuggestError(null);
+    try {
+      const toCreate = suggestions.filter((_, i) => suggestChecked[i]);
+      for (const s of toCreate) {
+        await api.createCategory(householdId, {
+          name: s.name,
+          kind: s.kind,
+          groupName: s.groupName || undefined,
+          monthlyTargetCents: s.monthlyTargetCents ?? undefined,
+        });
+      }
+      setSuggestions(null);
+      await onChanged();
+    } catch (err) {
+      setSuggestError(err instanceof Error ? err.message : "Failed to create categories");
     }
   }
 
@@ -334,6 +372,49 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
         </div>
       ))}
       {visible.length === 0 && <p className="hint">Nothing here yet — add one below.</p>}
+
+      <section className="card card--padded">
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <h2 style={{ margin: 0 }}>Suggest categories with AI</h2>
+          <button type="button" className="secondary" onClick={loadSuggestions} disabled={loadingSuggestions}>
+            {loadingSuggestions ? "Thinking…" : "Suggest categories"}
+          </button>
+        </div>
+        {suggestions && (
+          <div className="section" style={{ gap: 12, marginTop: 16 }}>
+            {suggestions.length === 0 ? (
+              <p className="hint">Nothing to suggest — your existing categories already cover your recent activity.</p>
+            ) : (
+              <>
+                <div className="row-list">
+                  {suggestions.map((s, i) => (
+                    <div className="row-item" key={`${s.name}-${i}`}>
+                      <input type="checkbox" checked={suggestChecked[i] ?? true} onChange={(e) => setSuggestChecked((prev) => ({ ...prev, [i]: e.target.checked }))} />
+                      <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                        <span className="row-title">
+                          {s.name} <span className="badge badge--muted">{s.kind}</span>
+                        </span>
+                        <span className="row-meta">{s.reasoning}</span>
+                      </div>
+                      <span className="row-meta">{s.groupName}</span>
+                      <span className="money">{s.monthlyTargetCents ? formatCents(s.monthlyTargetCents) : "—"}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="row">
+                  <button type="button" onClick={createSelectedSuggestions}>
+                    Create selected
+                  </button>
+                  <button type="button" className="secondary" onClick={() => setSuggestions(null)}>
+                    Discard
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {suggestError && <p className="error">{suggestError}</p>}
+      </section>
 
       <section className="card card--padded">
         <h2>Add a category</h2>

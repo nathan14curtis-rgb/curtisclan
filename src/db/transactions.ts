@@ -299,6 +299,39 @@ export async function clearCategorization(db: D1Database, householdId: string, t
   return { ...existing, category_id: null, updated_at: now };
 }
 
+export interface MerchantActivitySummary {
+  merchant: string;
+  count: number;
+  avgAmountCents: number;
+  kind: "expense" | "income";
+}
+
+/**
+ * Aggregated (never row-level) merchant activity for uncategorized
+ * transactions — the input to the AI category-suggestion feature
+ * (src/categorization/categorySuggestions.ts). Same privacy boundary as
+ * the categorization LLM calls: merchant name, count, and an average
+ * amount, nothing else about the transaction or account.
+ */
+export async function listUncategorizedMerchantSummary(db: D1Database, householdId: string): Promise<MerchantActivitySummary[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT COALESCE(normalized_merchant, raw_description) AS merchant,
+              COUNT(*) AS count,
+              AVG(amount_cents) AS avg_amount_cents,
+              CASE WHEN AVG(amount_cents) < 0 THEN 'expense' ELSE 'income' END AS kind
+         FROM "transaction"
+        WHERE household_id = ? AND category_id IS NULL AND is_transfer = 0
+        GROUP BY merchant
+        HAVING COUNT(*) >= 1
+        ORDER BY count DESC
+        LIMIT 40`,
+    )
+    .bind(householdId)
+    .all<{ merchant: string; count: number; avg_amount_cents: number; kind: "expense" | "income" }>();
+  return results.map((r) => ({ merchant: r.merchant, count: r.count, avgAmountCents: Math.round(r.avg_amount_cents), kind: r.kind }));
+}
+
 /** Recently categorized transactions (auto or otherwise), most recent
  * first — feeds both the morning digest (src/messaging/dailyDigest.ts)
  * and the "reply without 'fix'" correction pool

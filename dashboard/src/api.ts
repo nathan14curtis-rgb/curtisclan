@@ -150,6 +150,14 @@ export interface RecurringPattern {
   sample_count: number;
 }
 
+export interface CategorySuggestion {
+  name: string;
+  kind: "expense" | "income" | "savings";
+  groupName: string;
+  monthlyTargetCents: number | null;
+  reasoning: string;
+}
+
 export interface MaintenanceTask {
   id: string;
   household_id: string;
@@ -211,6 +219,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  suggestCategories: (householdId: string) => request<CategorySuggestion[]>(`/households/${householdId}/categories/suggest`),
   renameCategory: (householdId: string, categoryId: string, name: string) =>
     request<Category>(`/households/${householdId}/categories/${categoryId}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   archiveCategory: (householdId: string, categoryId: string) =>
