@@ -22,11 +22,18 @@ const SIZE_FILTER_RANGES: Record<Exclude<SizeFilter, "all">, (cents: number) => 
   over100: (cents) => Math.abs(cents) > 10000,
 };
 
+// No glyph for 'me' — the checkbox itself already shows checked, and a
+// "✓" badge next to a checked checkbox read as two checkmarks stacked on
+// top of each other. The robot icon is the one case worth a badge: it's
+// new information (auto-verified, not a person) the checkbox alone can't
+// convey.
 const VERIFY_MARK: Record<VerifyState, { className: string; label: string; content: React.ReactNode }> = {
-  me: { className: "verify-mark verify-mark--me", label: "Verified by a household member", content: "✓" },
+  me: { className: "verify-mark verify-mark--me", label: "Verified by a household member", content: null },
   ai: { className: "verify-mark verify-mark--ai", label: "Auto-verified — matched to a known merchant", content: <RobotIcon size={11} /> },
   none: { className: "verify-mark verify-mark--none", label: "Unverified — no one has confirmed this yet", content: null },
 };
+
+type QuickFilter = "out" | "in" | "needsCategory" | null;
 
 function initials(text: string): string {
   return text
@@ -44,6 +51,7 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const [merchantQuery, setMerchantQuery] = useState("");
   const [verifyFilter, setVerifyFilter] = useState<VerifyFilter>("all");
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>("all");
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Setting busyId re-renders immediately (to disable the control while the
@@ -89,10 +97,13 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
       if (verifyFilter === "verified" && t.verify_state !== "me") return false;
       if (verifyFilter === "unverified" && t.verify_state === "me") return false;
       if (sizeFilter !== "all" && !SIZE_FILTER_RANGES[sizeFilter](t.amount_cents)) return false;
+      if (quickFilter === "out" && (t.amount_cents >= 0 || t.is_transfer)) return false;
+      if (quickFilter === "in" && (t.amount_cents <= 0 || t.is_transfer)) return false;
+      if (quickFilter === "needsCategory" && (t.category_id || t.is_transfer)) return false;
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, memberFilter, fromDate, toDate, merchantQuery, verifyFilter, sizeFilter, accountById, userById]);
+  }, [transactions, memberFilter, fromDate, toDate, merchantQuery, verifyFilter, sizeFilter, quickFilter, accountById, userById]);
 
   const groups = useMemo(() => {
     const byDate = new Map<string, Transaction[]>();
@@ -305,17 +316,38 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
       </div>
 
       <div className="grid-3">
-        <div className="card card--emphasis card--padded stat-tile">
+        <div
+          role="button"
+          tabIndex={0}
+          className={`card ${quickFilter === "out" ? "card--emphasis" : ""} card--padded stat-tile`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setQuickFilter((f) => (f === "out" ? null : "out"))}
+          onKeyDown={(e) => e.key === "Enter" && setQuickFilter((f) => (f === "out" ? null : "out"))}
+        >
           <span className="label">Money out, filtered</span>
           <span className="figure">{formatCents(-outCents)}</span>
         </div>
-        <div className="card card--padded stat-tile">
+        <div
+          role="button"
+          tabIndex={0}
+          className={`card ${quickFilter === "in" ? "card--emphasis" : ""} card--padded stat-tile`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setQuickFilter((f) => (f === "in" ? null : "in"))}
+          onKeyDown={(e) => e.key === "Enter" && setQuickFilter((f) => (f === "in" ? null : "in"))}
+        >
           <span className="label">Money in</span>
           <span className="figure" style={{ color: "var(--teal)" }}>
             {formatCents(inCents)}
           </span>
         </div>
-        <div className="card card--padded stat-tile">
+        <div
+          role="button"
+          tabIndex={0}
+          className={`card ${quickFilter === "needsCategory" ? "card--emphasis" : ""} card--padded stat-tile`}
+          style={{ cursor: "pointer" }}
+          onClick={() => setQuickFilter((f) => (f === "needsCategory" ? null : "needsCategory"))}
+          onKeyDown={(e) => e.key === "Enter" && setQuickFilter((f) => (f === "needsCategory" ? null : "needsCategory"))}
+        >
           <span className="label">Needs a category</span>
           <span className="figure">{uncategorizedCount}</span>
         </div>
