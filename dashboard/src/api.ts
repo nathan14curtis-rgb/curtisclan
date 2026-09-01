@@ -251,6 +251,11 @@ export const api = {
     }),
   unverifyTransaction: (householdId: string, transactionId: string) =>
     request<Transaction>(`/households/${householdId}/transactions/${transactionId}/unverify`, { method: "POST" }),
+  uncategorizeTransaction: (householdId: string, transactionId: string, clearedByUserId?: string) =>
+    request<Transaction>(`/households/${householdId}/transactions/${transactionId}/uncategorize`, {
+      method: "POST",
+      body: JSON.stringify({ clearedByUserId }),
+    }),
 
   createLinkToken: (householdId: string, userId: string) =>
     request<{ link_token: string; expiration: string }>(`/households/${householdId}/plaid/link-token`, {

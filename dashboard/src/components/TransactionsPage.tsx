@@ -5,12 +5,22 @@ import { RobotIcon } from "./icons/RobotIcon";
 
 interface Props {
   householdId: string;
+  currentUserId: string | null;
   users: User[];
   accounts: Account[];
   categories: Category[];
   transactions: Transaction[];
   onChanged: () => Promise<void>;
 }
+
+type VerifyFilter = "all" | "verified" | "unverified";
+type SizeFilter = "all" | "under25" | "25to100" | "over100";
+
+const SIZE_FILTER_RANGES: Record<Exclude<SizeFilter, "all">, (cents: number) => boolean> = {
+  under25: (cents) => Math.abs(cents) < 2500,
+  "25to100": (cents) => Math.abs(cents) >= 2500 && Math.abs(cents) <= 10000,
+  over100: (cents) => Math.abs(cents) > 10000,
+};
 
 const VERIFY_MARK: Record<VerifyState, { className: string; label: string; content: React.ReactNode }> = {
   me: { className: "verify-mark verify-mark--me", label: "Verified by a household member", content: "✓" },
@@ -27,8 +37,13 @@ function initials(text: string): string {
     .toUpperCase();
 }
 
-export function TransactionsPage({ householdId, users, accounts, categories, transactions, onChanged }: Props) {
+export function TransactionsPage({ householdId, currentUserId, users, accounts, categories, transactions, onChanged }: Props) {
   const [memberFilter, setMemberFilter] = useState("All");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [merchantQuery, setMerchantQuery] = useState("");
+  const [verifyFilter, setVerifyFilter] = useState<VerifyFilter>("all");
+  const [sizeFilter, setSizeFilter] = useState<SizeFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Setting busyId re-renders immediately (to disable the control while the
@@ -37,7 +52,7 @@ export function TransactionsPage({ householdId, users, accounts, categories, tra
   // that intermediate render forces the checkbox back to its still-stale
   // checked value, visibly reverting the user's own click for a moment.
   const [pendingExcluded, setPendingExcluded] = useState<Record<string, boolean>>({});
-  const [verifyingTxId, setVerifyingTxId] = useState<string | null>(null);
+  const [pendingVerified, setPendingVerified] = useState<Record<string, boolean>>({});
 
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
@@ -59,13 +74,25 @@ export function TransactionsPage({ householdId, users, accounts, categories, tra
   const filters = ["All", ...users.map((u) => u.name), "Uncategorized"];
 
   const filtered = useMemo(() => {
+    const merchantNeedle = merchantQuery.trim().toLowerCase();
     return transactions.filter((t) => {
-      if (memberFilter === "All") return true;
-      if (memberFilter === "Uncategorized") return !t.category_id && !t.is_transfer;
-      return memberFor(t) === memberFilter;
+      if (memberFilter === "All") {
+        // no-op
+      } else if (memberFilter === "Uncategorized") {
+        if (t.category_id || t.is_transfer) return false;
+      } else if (memberFor(t) !== memberFilter) {
+        return false;
+      }
+      if (fromDate && t.posted_at < fromDate) return false;
+      if (toDate && t.posted_at > toDate) return false;
+      if (merchantNeedle && !(t.normalized_merchant ?? t.raw_description).toLowerCase().includes(merchantNeedle)) return false;
+      if (verifyFilter === "verified" && t.verify_state !== "me") return false;
+      if (verifyFilter === "unverified" && t.verify_state === "me") return false;
+      if (sizeFilter !== "all" && !SIZE_FILTER_RANGES[sizeFilter](t.amount_cents)) return false;
+      return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transactions, memberFilter, accountById, userById]);
+  }, [transactions, memberFilter, fromDate, toDate, merchantQuery, verifyFilter, sizeFilter, accountById, userById]);
 
   const groups = useMemo(() => {
     const byDate = new Map<string, Transaction[]>();
@@ -119,24 +146,35 @@ export function TransactionsPage({ householdId, users, accounts, categories, tra
     }
   }
 
-  async function verifyAs(transactionId: string, userId: string) {
-    setVerifyingTxId(null);
+// Toggling verify off resets an unconfirmed automatic guess back to
+// "needs review" instead of leaving it looking settled — see
+// clearCategorization's doc comment (src/db/transactions.ts). A category a
+// human actually set by hand (verify_state 'me' before the toggle, or
+// 'none' with a category already chosen) is left alone; only 'ai' gets
+// cleared.
+  async function toggleVerified(t: Transaction, verified: boolean) {
+    setPendingVerified((prev) => ({ ...prev, [t.id]: verified }));
+    setBusyId(t.id);
     setError(null);
     try {
-      await api.verifyTransaction(householdId, transactionId, userId);
+      if (verified) {
+        if (!currentUserId) throw new Error("Not signed in");
+        await api.verifyTransaction(householdId, t.id, currentUserId);
+      } else {
+        await api.unverifyTransaction(householdId, t.id);
+        if (t.verify_state === "ai") {
+          await api.uncategorizeTransaction(householdId, t.id, currentUserId ?? undefined);
+        }
+      }
       await onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to verify");
-    }
-  }
-
-  async function unverify(transactionId: string) {
-    setError(null);
-    try {
-      await api.unverifyTransaction(householdId, transactionId);
-      await onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to unverify");
+      setError(err instanceof Error ? err.message : "Failed to update verification");
+    } finally {
+      setBusyId(null);
+      setPendingVerified((prev) => {
+        const { [t.id]: _, ...rest } = prev;
+        return rest;
+      });
     }
   }
 
@@ -176,6 +214,60 @@ export function TransactionsPage({ householdId, users, accounts, categories, tra
         <button className="secondary" onClick={exportCsv} type="button">
           Export CSV
         </button>
+      </div>
+
+      <div className="row" style={{ gap: 12 }}>
+        <div className="field" style={{ margin: 0 }}>
+          <label htmlFor="tx-filter-from">From</label>
+          <input id="tx-filter-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+        </div>
+        <div className="field" style={{ margin: 0 }}>
+          <label htmlFor="tx-filter-to">To</label>
+          <input id="tx-filter-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+        </div>
+        <div className="field" style={{ margin: 0, flex: "1 1 180px" }}>
+          <label htmlFor="tx-filter-merchant">Merchant</label>
+          <input
+            id="tx-filter-merchant"
+            type="text"
+            placeholder="Search merchant…"
+            value={merchantQuery}
+            onChange={(e) => setMerchantQuery(e.target.value)}
+          />
+        </div>
+        <div className="field" style={{ margin: 0 }}>
+          <label htmlFor="tx-filter-verify">Verification</label>
+          <select id="tx-filter-verify" value={verifyFilter} onChange={(e) => setVerifyFilter(e.target.value as VerifyFilter)}>
+            <option value="all">All</option>
+            <option value="verified">Verified</option>
+            <option value="unverified">Unverified</option>
+          </select>
+        </div>
+        <div className="field" style={{ margin: 0 }}>
+          <label htmlFor="tx-filter-size">Size</label>
+          <select id="tx-filter-size" value={sizeFilter} onChange={(e) => setSizeFilter(e.target.value as SizeFilter)}>
+            <option value="all">Any amount</option>
+            <option value="under25">Under $25</option>
+            <option value="25to100">$25–$100</option>
+            <option value="over100">Over $100</option>
+          </select>
+        </div>
+        {(fromDate || toDate || merchantQuery || verifyFilter !== "all" || sizeFilter !== "all") && (
+          <button
+            className="secondary"
+            type="button"
+            style={{ alignSelf: "flex-end" }}
+            onClick={() => {
+              setFromDate("");
+              setToDate("");
+              setMerchantQuery("");
+              setVerifyFilter("all");
+              setSizeFilter("all");
+            }}
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       <div className="row" style={{ justifyContent: "space-between", fontSize: 13, color: "var(--muted)" }}>
@@ -254,27 +346,15 @@ export function TransactionsPage({ householdId, users, accounts, categories, tra
                   <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
                     {formatCents(t.amount_cents)}
                   </span>
-                  {verifyingTxId === t.id ? (
-                    <select autoFocus onChange={(e) => e.target.value && verifyAs(t.id, e.target.value)} onBlur={() => setVerifyingTxId(null)} defaultValue="">
-                      <option value="" disabled>
-                        Verify as…
-                      </option>
-                      {users.map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span
-                      title={mark.label}
-                      className={mark.className}
-                      style={{ cursor: "pointer" }}
-                      onClick={() => (t.verify_state === "me" ? unverify(t.id) : setVerifyingTxId(t.id))}
-                    >
-                      {mark.content}
-                    </span>
-                  )}
+                  <label className="row" style={{ gap: 6, flex: "0 0 auto" }} title={mark.label}>
+                    <input
+                      type="checkbox"
+                      checked={pendingVerified[t.id] ?? t.verify_state === "me"}
+                      disabled={busyId === t.id}
+                      onChange={(e) => toggleVerified(t, e.target.checked)}
+                    />
+                    <span className={mark.className}>{mark.content}</span>
+                  </label>
                   <label className="row" style={{ gap: 6, flex: "0 0 auto" }}>
                     <input
                       type="checkbox"
