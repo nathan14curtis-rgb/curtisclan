@@ -181,13 +181,15 @@ describe("processInboundReply — natural-language correction without 'fix'", ()
     expect(body.content).toContain("$88 left this month");
   });
 
-  it("does nothing when there's nothing open and nothing recently categorized to correct", async () => {
+  it("tries to answer conversationally when there's nothing open and nothing recently categorized to correct", async () => {
     const { household, nathan } = await seedHousehold();
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    Object.assign(env, { ANTHROPIC_API_KEY: undefined });
+    const fetchMock = mockFetchOnce({ message_handle: "mh_qa", group_id: "grp_abc", status: "QUEUED", error_code: null });
 
     await processInboundReply(env, household.id, nathan.id, "the uber was for business");
-    expect(fetchMock).not.toHaveBeenCalled();
+    // No API key configured — falls back to the "not set up yet" text
+    // rather than silently doing nothing (Sendblue send is the one fetch).
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -12,6 +12,7 @@ import {
   getTransaction,
   listRecentlyCategorizedTransactions,
 } from "../db/transactions";
+import { answerBudgetQuestion } from "./budgetQA";
 import { sendToHouseholdGroup } from "./groupChat";
 import { resolveReply, type OpenClarificationItem, type ReplyResolverResult } from "./replyResolver";
 
@@ -59,7 +60,12 @@ export async function processInboundReply(env: Env, householdId: string, userId:
     listOpenClarificationsForHousehold(env.DB, householdId),
     listRecentlyCategorizedTransactions(env.DB, householdId, since),
   ]);
-  if (open.length === 0 && recent.length === 0) return;
+  if (open.length === 0 && recent.length === 0) {
+    // Nothing to categorize against — this is either a budget question or
+    // small talk. Try to answer it rather than dropping it silently.
+    await replyToUnresolvedText(env, householdId, content);
+    return;
+  }
 
   if (!env.ANTHROPIC_API_KEY) {
     // A silent no-op here reads to the person on the other end as their
@@ -141,18 +147,49 @@ export async function processInboundReply(env: Env, householdId: string, userId:
 
   if (applied.length === 0) {
     // Claude ran and genuinely found nothing to apply — every candidate
-    // was either unmatched or below MIN_MATCH_CONFIDENCE. Still not a
-    // silent outcome: the person sent a real reply and deserves to know
-    // it didn't land, not just wonder why nothing changed.
+    // was either unmatched or below MIN_MATCH_CONFIDENCE. If Claude flagged
+    // part of the reply as an actual question/comment, answer it instead of
+    // the generic "couldn't match" — that's the conversational path most
+    // plain replies ("how much left on groceries?") actually take.
     console.log(`[inboundReply] household ${householdId}: no confident matches (${result.matches.length} candidate match(es), all below threshold or unresolved)`);
-    await sendToHouseholdGroup(env, householdId, "Got your reply, but couldn't match it confidently to a specific charge — check the dashboard to categorize it manually.");
+    if (result.unresolvedText) {
+      await replyToUnresolvedText(env, householdId, result.unresolvedText);
+    } else {
+      await sendToHouseholdGroup(env, householdId, "Got your reply, but couldn't match it confidently to a specific charge — check the dashboard to categorize it manually.");
+    }
     return;
   }
 
   // The confirmation message is not optional (PLAN.md §5.3): batching
   // removes the self-correcting property of one-at-a-time asks, so every
   // resolution is echoed back for a two-second correction.
-  await sendToHouseholdGroup(env, householdId, buildConfirmationText(applied));
+  let confirmationText = buildConfirmationText(applied);
+  if (result.unresolvedText) {
+    const answer = await answerBudgetQuestion(env, householdId, result.unresolvedText).catch((err) => {
+      console.error(`[inboundReply] answerBudgetQuestion failed for household ${householdId}: ${describeError(err)}`);
+      return null;
+    });
+    if (answer) confirmationText += `\n\n${answer}`;
+  }
+  await sendToHouseholdGroup(env, householdId, confirmationText);
+}
+
+/** A reply that named nothing to categorize — try to answer it as a budget
+ * question before giving up. Never silent (PLAN.md §5.3's rule applies here
+ * too): a question deserves an answer, and even "couldn't answer that" is
+ * better than the person wondering if their text went through. */
+async function replyToUnresolvedText(env: Env, householdId: string, text: string): Promise<void> {
+  if (!env.ANTHROPIC_API_KEY) {
+    await sendToHouseholdGroup(env, householdId, "Got it, but I can't answer questions yet — that part isn't set up.");
+    return;
+  }
+  try {
+    const answer = await answerBudgetQuestion(env, householdId, text);
+    await sendToHouseholdGroup(env, householdId, answer ?? "Not sure how to answer that one — try asking about a specific category.");
+  } catch (err) {
+    console.error(`[inboundReply] answerBudgetQuestion failed for household ${householdId}: ${describeError(err)}`);
+    await sendToHouseholdGroup(env, householdId, "Hit a hiccup answering that — try again in a bit.");
+  }
 }
 
 /** The envelope's running balance through the current month — "how much
