@@ -265,6 +265,73 @@ export async function applyCategorization(
   return { ...existing, category_id: input.categoryId, memo: input.memo ?? existing.memo, updated_at: now };
 }
 
+/**
+ * Resets a transaction back to uncategorized — the dashboard's verify
+ * toggle uses this when switching a transaction from "ai" (an unconfirmed
+ * automatic guess) back off: rather than leave a category on the record
+ * that nobody actually confirmed, clear it so the transaction goes back to
+ * needing review. Distinct from unverifyTransaction, which only clears the
+ * human-confirmation columns and leaves the category alone — this clears
+ * the category itself and appends an audit row (method='human', the
+ * household member doing the toggling) so the reset is visible in the
+ * transaction_classification trail like any other correction.
+ */
+export async function clearCategorization(db: D1Database, householdId: string, transactionId: string, clearedByUserId?: string | null): Promise<Transaction> {
+  const existing = await getTransaction(db, householdId, transactionId);
+  const now = nowIso();
+
+  const result = await db
+    .prepare(`UPDATE "transaction" SET category_id = NULL, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(now, transactionId, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", transactionId);
+
+  if (existing.category_id) {
+    await recordClassification(db, householdId, {
+      transactionId,
+      method: "human",
+      categoryId: null,
+      priorCategoryId: existing.category_id,
+      createdByUserId: clearedByUserId,
+    });
+  }
+
+  return { ...existing, category_id: null, updated_at: now };
+}
+
+export interface MerchantActivitySummary {
+  merchant: string;
+  count: number;
+  avgAmountCents: number;
+  kind: "expense" | "income";
+}
+
+/**
+ * Aggregated (never row-level) merchant activity for uncategorized
+ * transactions — the input to the AI category-suggestion feature
+ * (src/categorization/categorySuggestions.ts). Same privacy boundary as
+ * the categorization LLM calls: merchant name, count, and an average
+ * amount, nothing else about the transaction or account.
+ */
+export async function listUncategorizedMerchantSummary(db: D1Database, householdId: string): Promise<MerchantActivitySummary[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT COALESCE(normalized_merchant, raw_description) AS merchant,
+              COUNT(*) AS count,
+              AVG(amount_cents) AS avg_amount_cents,
+              CASE WHEN AVG(amount_cents) < 0 THEN 'expense' ELSE 'income' END AS kind
+         FROM "transaction"
+        WHERE household_id = ? AND category_id IS NULL AND is_transfer = 0
+        GROUP BY merchant
+        HAVING COUNT(*) >= 1
+        ORDER BY count DESC
+        LIMIT 40`,
+    )
+    .bind(householdId)
+    .all<{ merchant: string; count: number; avg_amount_cents: number; kind: "expense" | "income" }>();
+  return results.map((r) => ({ merchant: r.merchant, count: r.count, avgAmountCents: Math.round(r.avg_amount_cents), kind: r.kind }));
+}
+
 /** Recently categorized transactions (auto or otherwise), most recent
  * first — feeds both the morning digest (src/messaging/dailyDigest.ts)
  * and the "reply without 'fix'" correction pool

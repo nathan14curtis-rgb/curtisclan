@@ -135,6 +135,29 @@ export interface Document {
   archived_at: string | null;
 }
 
+export type RecurringPatternKind = "expense" | "income";
+export type RecurringPatternStatus = "suggested" | "confirmed" | "dismissed";
+
+export interface RecurringPattern {
+  id: string;
+  household_id: string;
+  category_id: string | null;
+  merchant_pattern: string;
+  kind: RecurringPatternKind;
+  day_of_month: number;
+  day_tolerance: number;
+  status: RecurringPatternStatus;
+  sample_count: number;
+}
+
+export interface CategorySuggestion {
+  name: string;
+  kind: "expense" | "income" | "savings";
+  groupName: string;
+  monthlyTargetCents: number | null;
+  reasoning: string;
+}
+
 export interface MaintenanceTask {
   id: string;
   household_id: string;
@@ -196,6 +219,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+  suggestCategories: (householdId: string) => request<CategorySuggestion[]>(`/households/${householdId}/categories/suggest`),
   renameCategory: (householdId: string, categoryId: string, name: string) =>
     request<Category>(`/households/${householdId}/categories/${categoryId}`, { method: "PATCH", body: JSON.stringify({ name }) }),
   archiveCategory: (householdId: string, categoryId: string) =>
@@ -251,6 +275,11 @@ export const api = {
     }),
   unverifyTransaction: (householdId: string, transactionId: string) =>
     request<Transaction>(`/households/${householdId}/transactions/${transactionId}/unverify`, { method: "POST" }),
+  uncategorizeTransaction: (householdId: string, transactionId: string, clearedByUserId?: string) =>
+    request<Transaction>(`/households/${householdId}/transactions/${transactionId}/uncategorize`, {
+      method: "POST",
+      body: JSON.stringify({ clearedByUserId }),
+    }),
 
   createLinkToken: (householdId: string, userId: string) =>
     request<{ link_token: string; expiration: string }>(`/households/${householdId}/plaid/link-token`, {
@@ -312,4 +341,13 @@ export const api = {
     request<Omit<MaintenanceTask, "status">>(`/households/${householdId}/maintenance/${taskId}/complete`, { method: "POST" }),
   reopenMaintenanceTask: (householdId: string, taskId: string) =>
     request<Omit<MaintenanceTask, "status">>(`/households/${householdId}/maintenance/${taskId}/reopen`, { method: "POST" }),
+
+  listRecurringPatterns: (householdId: string, status?: RecurringPatternStatus) =>
+    request<RecurringPattern[]>(`/households/${householdId}/recurring-patterns${status ? `?status=${status}` : ""}`),
+  detectRecurringPatterns: (householdId: string) =>
+    request<RecurringPattern[]>(`/households/${householdId}/recurring-patterns/detect`, { method: "POST" }),
+  confirmRecurringPattern: (householdId: string, patternId: string, input: { categoryId?: string; newCategoryName?: string; kind?: "expense" | "income" }) =>
+    request<RecurringPattern>(`/households/${householdId}/recurring-patterns/${patternId}/confirm`, { method: "POST", body: JSON.stringify(input) }),
+  dismissRecurringPattern: (householdId: string, patternId: string) =>
+    request<{ ok: true }>(`/households/${householdId}/recurring-patterns/${patternId}/dismiss`, { method: "POST" }),
 };

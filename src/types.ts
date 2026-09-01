@@ -10,6 +10,8 @@ export type AllocationSource = "income_assignment" | "envelope_move" | "correcti
 export type ClarificationStatus = "queued" | "sent" | "answered" | "timed_out";
 export type RuleSource = "user" | "ai_suggested";
 export type AccessLevel = "full" | "limited" | "view_only";
+export type RecurringPatternKind = "expense" | "income";
+export type RecurringPatternStatus = "suggested" | "confirmed" | "dismissed";
 export type AssetType = "property" | "vehicle" | "appliance" | "other";
 export type DocumentCategory = "insurance" | "warranty" | "identification" | "passwords";
 
@@ -71,6 +73,20 @@ export interface PlaidItem {
   status: PlaidItemStatus;
   cursor: string | null;
   last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecurringPattern {
+  id: string;
+  household_id: string;
+  category_id: string | null;
+  merchant_pattern: string;
+  kind: RecurringPatternKind;
+  day_of_month: number;
+  day_tolerance: number;
+  status: RecurringPatternStatus;
+  sample_count: number;
   created_at: string;
   updated_at: string;
 }

@@ -1,12 +1,13 @@
-import { useMemo, useState, type FormEvent } from "react";
-import { api, type Category, type Envelope, type EnvelopeMonthSummary } from "../api";
-import { formatCents } from "../format";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { api, type Category, type Envelope, type EnvelopeMonthSummary, type RecurringPattern, type Transaction } from "../api";
+import { formatCents, currentMonth } from "../format";
 
 interface Props {
   householdId: string;
   categories: Category[];
   envelopes: Envelope[];
   envelopeSummaries: Record<string, EnvelopeMonthSummary>;
+  transactions: Transaction[];
   onChanged: () => Promise<void>;
 }
 
@@ -30,10 +31,69 @@ const STATUS_BADGE_CLASS: Record<BillStatus, string> = {
   overspent: "badge badge--danger",
 };
 
-export function BillsPage({ householdId, categories, envelopes, envelopeSummaries, onChanged }: Props) {
+const DAY_SUFFIX = (day: number) => {
+  if (day % 10 === 1 && day !== 11) return "st";
+  if (day % 10 === 2 && day !== 12) return "nd";
+  if (day % 10 === 3 && day !== 13) return "rd";
+  return "th";
+};
+
+function ConfirmPatternForm({
+  pattern,
+  categories,
+  onConfirm,
+}: {
+  pattern: RecurringPattern;
+  categories: Category[];
+  onConfirm: (input: { categoryId?: string; newCategoryName?: string; kind?: "expense" | "income" }) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"existing" | "new">("new");
+  const [categoryId, setCategoryId] = useState("");
+  const [newName, setNewName] = useState("");
+  const matchingCategories = categories.filter((c) => !c.archived_at && c.kind === pattern.kind);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (mode === "existing") {
+      if (!categoryId) return;
+      await onConfirm({ categoryId });
+    } else {
+      if (!newName.trim()) return;
+      await onConfirm({ newCategoryName: newName.trim(), kind: pattern.kind });
+    }
+  }
+
+  return (
+    <form className="row" onSubmit={submit} style={{ flex: "0 0 auto" }}>
+      <select value={mode} onChange={(e) => setMode(e.target.value as "existing" | "new")}>
+        <option value="new">New category</option>
+        <option value="existing">Existing category</option>
+      </select>
+      {mode === "new" ? (
+        <input type="text" placeholder="Name" value={newName} onChange={(e) => setNewName(e.target.value)} style={{ width: 140 }} required />
+      ) : (
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required>
+          <option value="" disabled>
+            Choose…
+          </option>
+          {matchingCategories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      )}
+      <button type="submit">Confirm</button>
+    </form>
+  );
+}
+
+export function BillsPage({ householdId, categories, envelopes, envelopeSummaries, transactions, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newTarget, setNewTarget] = useState("");
+  const [patterns, setPatterns] = useState<RecurringPattern[]>([]);
+  const [detecting, setDetecting] = useState(false);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const bills = useMemo(
@@ -41,6 +101,28 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
     [envelopes],
   );
   const committedCents = useMemo(() => bills.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [bills]);
+
+  const refreshPatterns = async () => setPatterns(await api.listRecurringPatterns(householdId));
+  useEffect(() => {
+    refreshPatterns();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [householdId]);
+
+  const suggested = useMemo(() => patterns.filter((p) => p.status === "suggested"), [patterns]);
+  const confirmedIncome = useMemo(
+    () => patterns.filter((p) => p.status === "confirmed" && p.kind === "income" && p.category_id),
+    [patterns],
+  );
+
+  const month = currentMonth();
+  const incomeThisMonthByCategory = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const t of transactions) {
+      if (t.is_transfer || t.excluded_from_budget || !t.category_id || !t.posted_at.startsWith(month)) continue;
+      totals.set(t.category_id, (totals.get(t.category_id) ?? 0) + t.amount_cents);
+    }
+    return totals;
+  }, [transactions, month]);
 
   async function addBill(e: FormEvent) {
     e.preventDefault();
@@ -60,40 +142,139 @@ export function BillsPage({ householdId, categories, envelopes, envelopeSummarie
     }
   }
 
+  async function detect() {
+    setDetecting(true);
+    setError(null);
+    try {
+      await api.detectRecurringPatterns(householdId);
+      await refreshPatterns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to look for recurring patterns");
+    } finally {
+      setDetecting(false);
+    }
+  }
+
+  async function confirmPattern(pattern: RecurringPattern, input: { categoryId?: string; newCategoryName?: string; kind?: "expense" | "income" }) {
+    setError(null);
+    try {
+      await api.confirmRecurringPattern(householdId, pattern.id, input);
+      await Promise.all([refreshPatterns(), onChanged()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to confirm");
+    }
+  }
+
+  async function dismissPattern(patternId: string) {
+    setError(null);
+    try {
+      await api.dismissRecurringPattern(householdId, patternId);
+      await refreshPatterns();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to dismiss");
+    }
+  }
+
   return (
     <div className="section">
-      <div className="card card--emphasis card--padded stat-tile" style={{ maxWidth: 320 }}>
-        <span className="label">Committed this month</span>
-        <span className="figure">{formatCents(committedCents)}</span>
-        <span className="detail">
-          {bills.length} recurring bill{bills.length === 1 ? "" : "s"}.
-        </span>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div className="card card--emphasis card--padded stat-tile" style={{ maxWidth: 320, marginBottom: 0 }}>
+          <span className="label">Committed this month</span>
+          <span className="figure">{formatCents(committedCents)}</span>
+          <span className="detail">
+            {bills.length} recurring bill{bills.length === 1 ? "" : "s"}.
+          </span>
+        </div>
+        <button className="secondary" type="button" onClick={detect} disabled={detecting}>
+          {detecting ? "Looking…" : "Suggest recurring items"}
+        </button>
       </div>
 
-      <div className="row-list">
-        {bills.map((bill) => {
-          const category = categoryById.get(bill.category_id);
-          const summary = envelopeSummaries[bill.id];
-          const status = billStatus(bill, summary);
-          return (
-            <div className="row-item" key={bill.id}>
-              <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                <span className="row-title">{category?.name ?? "Unknown bill"}</span>
-                {summary && <span className="row-meta">{formatCents(summary.spentCents)} spent this month</span>}
+      {suggested.length > 0 && (
+        <section className="section" style={{ gap: 12 }}>
+          <h2 className="section-title" style={{ fontSize: 22 }}>
+            Suggested
+          </h2>
+          <div className="row-list">
+            {suggested.map((p) => (
+              <div className="row-item" key={p.id}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{p.merchant_pattern}</span>
+                  <span className="row-meta">
+                    {p.kind === "expense" ? "Charge" : "Deposit"} around the {p.day_of_month}
+                    {DAY_SUFFIX(p.day_of_month)} · seen {p.sample_count} times
+                  </span>
+                </div>
+                <span className="badge badge--muted">{p.kind}</span>
+                <ConfirmPatternForm pattern={p} categories={categories} onConfirm={(input) => confirmPattern(p, input)} />
+                <button className="danger" type="button" onClick={() => dismissPattern(p.id)}>
+                  Dismiss
+                </button>
               </div>
-              <span className={STATUS_BADGE_CLASS[status]}>{status}</span>
-              <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
-                {bill.monthly_target_cents !== null ? formatCents(bill.monthly_target_cents) : "—"}
-              </span>
-            </div>
-          );
-        })}
-        {bills.length === 0 && (
-          <div className="row-item">
-            <span className="hint">No bills yet — group an envelope into "Bills" from Envelopes, or add one below.</span>
+            ))}
           </div>
-        )}
-      </div>
+        </section>
+      )}
+
+      <section className="section" style={{ gap: 12 }}>
+        <h2 className="section-title" style={{ fontSize: 22 }}>
+          Bills
+        </h2>
+        <div className="row-list">
+          {bills.map((bill) => {
+            const category = categoryById.get(bill.category_id);
+            const summary = envelopeSummaries[bill.id];
+            const status = billStatus(bill, summary);
+            return (
+              <div className="row-item" key={bill.id}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{category?.name ?? "Unknown bill"}</span>
+                  {summary && <span className="row-meta">{formatCents(summary.spentCents)} spent this month</span>}
+                </div>
+                <span className={STATUS_BADGE_CLASS[status]}>{status}</span>
+                <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
+                  {bill.monthly_target_cents !== null ? formatCents(bill.monthly_target_cents) : "—"}
+                </span>
+              </div>
+            );
+          })}
+          {bills.length === 0 && (
+            <div className="row-item">
+              <span className="hint">No bills yet — group an envelope into "Bills" from Spending Plan, or add one below.</span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="section" style={{ gap: 12 }}>
+        <h2 className="section-title" style={{ fontSize: 22 }}>
+          Recurring income
+        </h2>
+        <div className="row-list">
+          {confirmedIncome.map((p) => {
+            const category = categoryById.get(p.category_id!);
+            return (
+              <div className="row-item" key={p.id}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{category?.name ?? p.merchant_pattern}</span>
+                  <span className="row-meta">
+                    {p.merchant_pattern} · around the {p.day_of_month}
+                    {DAY_SUFFIX(p.day_of_month)}
+                  </span>
+                </div>
+                <span className="money positive" style={{ minWidth: 96, textAlign: "right" }}>
+                  {formatCents(incomeThisMonthByCategory.get(p.category_id!) ?? 0)}
+                </span>
+              </div>
+            );
+          })}
+          {confirmedIncome.length === 0 && (
+            <div className="row-item">
+              <span className="hint">No recurring income confirmed yet — check "Suggested" above once a paycheck or deposit has repeated a few times.</span>
+            </div>
+          )}
+        </div>
+      </section>
 
       <section className="card card--padded">
         <h2>Add a bill</h2>

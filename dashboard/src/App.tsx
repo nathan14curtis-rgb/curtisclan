@@ -39,6 +39,7 @@ const MAINTENANCE_ASSET_TYPE_BY_VIEW: Record<string, AssetType> = { House: "prop
 
 export function App() {
   const [household, setHousehold] = useState<Household | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newHouseholdName, setNewHouseholdName] = useState("");
@@ -69,7 +70,10 @@ export function App() {
   useEffect(() => {
     api
       .getSession()
-      .then((session) => api.getHousehold(session.householdId))
+      .then((session) => {
+        setCurrentUserId(session.userId);
+        return api.getHousehold(session.householdId);
+      })
       .then(setHousehold)
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -131,7 +135,8 @@ export function App() {
     e.preventDefault();
     setError(null);
     try {
-      const { household: hh } = await api.createHousehold(newHouseholdName.trim(), newCreatorName.trim());
+      const { household: hh, userId } = await api.createHousehold(newHouseholdName.trim(), newCreatorName.trim());
+      setCurrentUserId(userId);
       setHousehold(hh);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create household");
@@ -209,7 +214,7 @@ export function App() {
       return <LoginPage onLoggedIn={() => window.location.reload()} onCreateHouseholdInstead={() => setShowCreateHousehold(true)} />;
     }
     return (
-      <>
+      <div className="auth-shell">
         <h1>Home Base</h1>
         <p className="subtitle">Set up your household to get started.</p>
         <form className="card" onSubmit={createHousehold}>
@@ -246,7 +251,7 @@ export function App() {
             .
           </p>
         </form>
-      </>
+      </div>
     );
   }
 
@@ -293,11 +298,13 @@ export function App() {
             envelopeSummaries={envelopeSummaries}
             transactions={transactions}
             onGoToTransactions={() => changeView("Transactions")}
+            onGoToEnvelopes={() => changeView("Envelopes")}
           />
         )}
         {activeView === "Transactions" && (
           <TransactionsPage
             householdId={household.id}
+            currentUserId={currentUserId}
             users={users}
             accounts={accounts}
             categories={categories}
@@ -311,8 +318,10 @@ export function App() {
             categories={categories}
             envelopes={envelopes}
             envelopeSummaries={envelopeSummaries}
+            transactions={transactions}
             readyToAssignCents={readyToAssignCents}
             onChanged={refreshCategoriesAndEnvelopes}
+            onTransactionsChanged={refreshTransactions}
           />
         )}
         {activeView === "Bills" && (
@@ -321,6 +330,7 @@ export function App() {
             categories={categories}
             envelopes={envelopes}
             envelopeSummaries={envelopeSummaries}
+            transactions={transactions}
             onChanged={refreshCategoriesAndEnvelopes}
           />
         )}

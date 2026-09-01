@@ -12,6 +12,7 @@ interface Props {
   envelopeSummaries: Record<string, EnvelopeMonthSummary>;
   transactions: Transaction[];
   onGoToTransactions: () => void;
+  onGoToEnvelopes: () => void;
 }
 
 function monthRange() {
@@ -22,7 +23,7 @@ function monthRange() {
   return { fromDate: iso(start), toDate: iso(end), daysInMonth: end.getDate(), dayOfMonth: now.getDate() };
 }
 
-export function OverviewPage({ householdId, categories, envelopes, envelopeSummaries, transactions, onGoToTransactions }: Props) {
+export function OverviewPage({ householdId, categories, envelopes, envelopeSummaries, transactions, onGoToTransactions, onGoToEnvelopes }: Props) {
   const [monthTransactions, setMonthTransactions] = useState<Transaction[]>([]);
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const activeEnvelopes = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
@@ -50,16 +51,24 @@ export function OverviewPage({ householdId, categories, envelopes, envelopeSumma
   const pct = budgetCents > 0 ? Math.min(100, Math.round((spentCents / budgetCents) * 100)) : 0;
 
   const { daysInMonth, dayOfMonth } = monthRange();
+  // Budgeted-category ids only — matches budgetCents/spentCents above.
+  // Previously this summed every non-transfer expense in the month
+  // regardless of whether its category had a budgeted envelope, so the
+  // pace line's endpoint didn't match the "spent so far" figure directly
+  // above it (spend in an unbudgeted or uncategorized category inflated
+  // the line but wasn't part of the number it was supposedly pacing).
+  const budgetedCategoryIds = useMemo(() => new Set(expenseEnvelopes.map((e) => e.category_id)), [expenseEnvelopes]);
   const dailyCumulativeCents = useMemo(() => {
     const daily = new Array(dayOfMonth).fill(0);
     for (const t of monthTransactions) {
       if (t.amount_cents >= 0 || t.is_transfer || t.excluded_from_budget) continue;
+      if (!t.category_id || !budgetedCategoryIds.has(t.category_id)) continue;
       const day = Number(t.posted_at.slice(8, 10));
       if (day >= 1 && day <= dayOfMonth) daily[day - 1] += -t.amount_cents;
     }
     let running = 0;
     return daily.map((v: number) => (running += v));
-  }, [monthTransactions, dayOfMonth]);
+  }, [monthTransactions, dayOfMonth, budgetedCategoryIds]);
 
   const incomeCents = useMemo(
     () =>
@@ -100,6 +109,29 @@ export function OverviewPage({ householdId, categories, envelopes, envelopeSumma
   }, [expenseEnvelopes, categoryById, envelopeSummaries, monthTransactions]);
 
   const envelopeCards = useMemo(() => activeEnvelopes.filter((e) => e.monthly_target_cents), [activeEnvelopes]);
+
+  // Income & expense summary (a lightweight P&L for the month) — replaces
+  // "Recent activity" per request: a running feed of the last few
+  // transactions duplicated what Transactions already shows, where a
+  // profit/loss breakdown by category is Overview-specific and answers "where
+  // did the money actually go this month" at a glance.
+  const plRows = useMemo(() => {
+    const byCategory = new Map<string, { name: string; kind: Category["kind"]; cents: number }>();
+    for (const t of monthTransactions) {
+      if (t.is_transfer || t.excluded_from_budget || !t.category_id) continue;
+      const category = categoryById.get(t.category_id);
+      if (!category || (category.kind !== "income" && category.kind !== "expense")) continue;
+      const existing = byCategory.get(category.id);
+      const cents = (existing?.cents ?? 0) + t.amount_cents;
+      byCategory.set(category.id, { name: category.name, kind: category.kind, cents });
+    }
+    const rows = [...byCategory.values()];
+    const income = rows.filter((r) => r.kind === "income").sort((a, b) => b.cents - a.cents);
+    const expenses = rows.filter((r) => r.kind === "expense").sort((a, b) => a.cents - b.cents);
+    const totalIncomeCents = income.reduce((sum, r) => sum + r.cents, 0);
+    const totalExpenseCents = expenses.reduce((sum, r) => sum + r.cents, 0);
+    return { income, expenses, totalIncomeCents, totalExpenseCents, netCents: totalIncomeCents + totalExpenseCents };
+  }, [monthTransactions, categoryById]);
 
   const goals = useMemo(
     () =>
@@ -155,11 +187,11 @@ export function OverviewPage({ householdId, categories, envelopes, envelopeSumma
       <section className="section">
         <div className="section-header">
           <h2 className="section-title">Envelopes</h2>
-          <a href="#" onClick={(e) => e.preventDefault()}>
+          <a href="#" onClick={(e) => (e.preventDefault(), onGoToEnvelopes())}>
             Adjust allocations
           </a>
         </div>
-        <div className="grid-4">
+        <div className="grid-4" style={{ alignItems: "stretch" }}>
           {envelopeCards.map((e) => {
             const category = categoryById.get(e.category_id);
             const summary = envelopeSummaries[e.id];
@@ -167,9 +199,13 @@ export function OverviewPage({ householdId, categories, envelopes, envelopeSumma
             const used = e.monthly_target_cents && summary ? Math.min(100, Math.max(0, ((e.monthly_target_cents - summary.balanceCents) / e.monthly_target_cents) * 100)) : 0;
             return (
               <div className="card card--padded" key={e.id} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                <div className="row" style={{ justifyContent: "space-between" }}>
-                  <span className="row-title">{category?.name ?? "Envelope"}</span>
-                  <span className={STATUS_BADGE_CLASS[status]}>{status}</span>
+                <div className="row" style={{ justifyContent: "space-between", flexWrap: "nowrap" }}>
+                  <span className="row-title" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {category?.name ?? "Envelope"}
+                  </span>
+                  <span className={STATUS_BADGE_CLASS[status]} style={{ flex: "0 0 auto" }}>
+                    {status}
+                  </span>
                 </div>
                 <span style={{ fontFamily: "var(--font-display)", fontSize: 36, letterSpacing: "-0.5px", color: "var(--ink)" }}>
                   {summary ? formatCents(summary.balanceCents) : "—"}
@@ -187,32 +223,51 @@ export function OverviewPage({ householdId, categories, envelopes, envelopeSumma
 
       <section className="grid-2" style={{ gridTemplateColumns: "1.4fr 1fr", alignItems: "start" }}>
         <div className="section">
-          <h2 className="section-title">Recent activity</h2>
+          <h2 className="section-title">Income &amp; expense summary</h2>
+          <div className="grid-3">
+            <div className="stat-tile">
+              <span className="label">Income</span>
+              <span className="figure figure--small" style={{ color: "var(--teal)" }}>
+                {formatCents(plRows.totalIncomeCents)}
+              </span>
+            </div>
+            <div className="stat-tile">
+              <span className="label">Expenses</span>
+              <span className="figure figure--small">{formatCents(plRows.totalExpenseCents)}</span>
+            </div>
+            <div className="stat-tile">
+              <span className="label">Net</span>
+              <span className="figure figure--small" style={{ color: plRows.netCents < 0 ? "var(--red)" : "var(--teal)" }}>
+                {formatCents(plRows.netCents)}
+              </span>
+            </div>
+          </div>
           <div className="row-list">
-            {transactions.slice(0, 6).map((t) => {
-              const category = t.category_id ? categoryById.get(t.category_id) : null;
-              return (
-                <div className="row-item" key={t.id}>
-                  <span className="row-avatar">
-                    {(t.normalized_merchant ?? t.raw_description)
-                      .split(" ")
-                      .slice(0, 2)
-                      .map((w) => w[0])
-                      .join("")}
-                  </span>
-                  <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                    <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
-                  </div>
-                  <span className="badge">{category?.name ?? "Needs review"}</span>
-                  <span className={`money ${t.amount_cents > 0 ? "positive" : ""}`} style={{ minWidth: 96, textAlign: "right" }}>
-                    {formatCents(t.amount_cents)}
-                  </span>
+            {plRows.income.map((r) => (
+              <div className="row-item" key={`income-${r.name}`}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{r.name}</span>
+                  <span className="row-meta">Income</span>
                 </div>
-              );
-            })}
-            {transactions.length === 0 && (
+                <span className="money positive" style={{ minWidth: 96, textAlign: "right" }}>
+                  {formatCents(r.cents)}
+                </span>
+              </div>
+            ))}
+            {plRows.expenses.map((r) => (
+              <div className="row-item" key={`expense-${r.name}`}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{r.name}</span>
+                  <span className="row-meta">Expense</span>
+                </div>
+                <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
+                  {formatCents(r.cents)}
+                </span>
+              </div>
+            ))}
+            {plRows.income.length === 0 && plRows.expenses.length === 0 && (
               <div className="row-item">
-                <span className="hint">Nothing imported yet.</span>
+                <span className="hint">Nothing categorized this month yet.</span>
               </div>
             )}
           </div>

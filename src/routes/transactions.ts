@@ -3,6 +3,7 @@ import { requireParam } from "../lib/http";
 import type { Env } from "../types";
 import {
   applyCategorization,
+  clearCategorization,
   getTransaction,
   listTransactionsWithVerifyState,
   setTransactionExcluded,
@@ -90,6 +91,15 @@ transactionsRoute.post("/:transactionId/verify", async (c) => {
 
 transactionsRoute.post("/:transactionId/unverify", async (c) => {
   const transaction = await unverifyTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"));
+  return c.json(transaction);
+});
+
+// The verify toggle's "off" side, for a transaction whose category was
+// never actually confirmed by a person (verify_state 'ai') — resets it to
+// uncategorized instead of leaving an unconfirmed guess on the record.
+transactionsRoute.post("/:transactionId/uncategorize", async (c) => {
+  const body = await c.req.json<{ clearedByUserId?: string }>().catch(() => ({}) as { clearedByUserId?: string });
+  const transaction = await clearCategorization(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), body.clearedByUserId);
   return c.json(transaction);
 });
 

@@ -23,6 +23,7 @@ import {
   removeTransactionByPlaidTxnId,
   updateTransactionFieldsFromPlaid,
 } from "../db/transactions";
+import { detectRecurringPatterns } from "../db/recurringPatterns";
 import { detectAndMarkTransfer } from "../db/transfers";
 import { transactionsSyncPage } from "./client";
 import type { PlaidAccount, PlaidTransaction } from "./types";
@@ -214,6 +215,12 @@ export async function syncPlaidItem(env: Env, householdId: string, plaidItemId: 
     hasMore = page.has_more;
     await updateSyncCursor(env.DB, plaidItemId, cursor);
   }
+
+  // "On Plaid sync ... suggest bills that have recurred over the last few
+  // months" — runs once per sync rather than per page, over the
+  // household's whole recent history (not just what this sync brought in),
+  // so a pattern spanning accounts/items still gets picked up.
+  await detectRecurringPatterns(env.DB, householdId);
 }
 
 /** ITEM webhooks (PLAN.md §4.1): catch ITEM_LOGIN_REQUIRED and surface a

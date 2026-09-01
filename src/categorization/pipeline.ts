@@ -5,6 +5,7 @@ import { getAccount } from "../db/accounts";
 import { listCategories } from "../db/categories";
 import { createClarification, getLatestClarificationForTransaction, resolveAskee } from "../db/clarifications";
 import { getMerchantMemory } from "../db/merchantMemory";
+import { matchRecurringPattern } from "../db/recurringPatterns";
 import { listRules } from "../db/rules";
 import { applyCategorization, getTransaction, listRecentCategorizedByMerchant } from "../db/transactions";
 import { categorize } from "./cascade";
@@ -50,6 +51,19 @@ export async function categorizeTransaction(
 ): Promise<void> {
   const transaction = await getTransaction(env.DB, householdId, transactionId);
   if (transaction.is_transfer || transaction.category_id) return;
+
+  // Ahead of the rules/memory/LLM cascade: a confirmed recurring pattern
+  // ("Lehi City" around the 1st, whatever the amount) is a stronger,
+  // human-approved signal than anything the cascade would otherwise
+  // produce for that merchant, and applies regardless of amount — the
+  // whole point of matching by vendor + day-of-month instead of exact
+  // amount (src/db/recurringPatterns.ts).
+  const recurringCategoryId = await matchRecurringPattern(env.DB, householdId, transaction);
+  if (recurringCategoryId) {
+    await applyCategorization(env.DB, householdId, transactionId, { categoryId: recurringCategoryId, method: "rule" });
+    console.log(`[categorize] ${transactionId} layer=recurring-pattern categoryId=${recurringCategoryId} needsClarification=false`);
+    return;
+  }
 
   const account = await getAccount(env.DB, householdId, transaction.account_id);
   const [allCategories, rules, merchantMemory, similar] = await Promise.all([

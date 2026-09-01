@@ -54,8 +54,8 @@ export function getPageHead(view: string, ctx: PageHeadContext): PageHead {
       };
     case "Envelopes":
       return {
-        sectionLabel: "Envelopes",
-        title: "Envelopes",
+        sectionLabel: "Spending Plan",
+        title: "Spending Plan",
         subtitle:
           ctx.envelopesNeedingAttention > 0
             ? `${ctx.envelopesNeedingAttention} need${ctx.envelopesNeedingAttention === 1 ? "s" : ""} a nudge before the month closes.`
@@ -65,9 +65,9 @@ export function getPageHead(view: string, ctx: PageHeadContext): PageHead {
       };
     case "Bills":
       return {
-        sectionLabel: "Bills",
-        title: "Bills",
-        subtitle: `${ctx.billsCount} recurring bill${ctx.billsCount === 1 ? "" : "s"}, ${money(ctx.billsCommittedCents)} committed this month.`,
+        sectionLabel: "Recurring",
+        title: "Recurring",
+        subtitle: `${ctx.billsCount} recurring item${ctx.billsCount === 1 ? "" : "s"}, ${money(ctx.billsCommittedCents)} committed this month.`,
         secondaryCta: "Payment methods",
         primaryCta: "Add a bill",
       };

@@ -3,6 +3,18 @@ import type { Asset, Household } from "../api";
 import { formatCents } from "../format";
 
 export const BUDGETING_VIEWS = ["Overview", "Transactions", "Envelopes", "Bills", "Goals", "Members"] as const;
+// Internal view ids (above) stay the same — they're the persisted
+// localStorage value and App.tsx's routing key — only the label shown in
+// the nav changes per the rename: Envelopes -> Spending Plan, Bills ->
+// Recurring (it now covers income too, not just expense bills).
+const BUDGETING_LABELS: Record<(typeof BUDGETING_VIEWS)[number], string> = {
+  Overview: "Overview",
+  Transactions: "Transactions",
+  Envelopes: "Spending Plan",
+  Bills: "Recurring",
+  Goals: "Goals",
+  Members: "Members",
+};
 export const DOCUMENTS_VIEWS = ["Insurance", "Warranties", "Identification", "Passwords"] as const;
 export const MAINTENANCE_VIEWS = ["House", "Car"] as const;
 export const ASSET_SUMMARY_VIEW = "Summary";
@@ -85,7 +97,7 @@ export function Sidebar({ activeView, onChange, assets, monthStatus, household, 
           label="Budgeting"
           isOpen={budgetingOpen}
           onToggle={() => setBudgetingOpen((v) => !v)}
-          items={BUDGETING_VIEWS.map((v) => ({ view: v, label: v }))}
+          items={BUDGETING_VIEWS.map((v) => ({ view: v, label: BUDGETING_LABELS[v] }))}
           activeView={activeView}
           onChange={onChange}
         />
