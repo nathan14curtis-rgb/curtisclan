@@ -251,6 +251,26 @@ export interface MaintenanceTask {
   updated_at: string;
 }
 
+export interface Session {
+  id: string;
+  token_hash: string;
+  household_id: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
+  last_seen_at: string;
+}
+
+export interface LoginCode {
+  id: string;
+  phone_e164: string;
+  code_hash: string;
+  attempts: number;
+  consumed_at: string | null;
+  expires_at: string;
+  created_at: string;
+}
+
 export interface Env {
   DB: D1Database;
   TRANSACTION_QUEUE: Queue;

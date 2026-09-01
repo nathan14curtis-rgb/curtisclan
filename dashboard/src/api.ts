@@ -147,8 +147,18 @@ export interface MaintenanceTask {
 }
 
 export const api = {
-  createHousehold: (name: string) => request<Household>("/households", { method: "POST", body: JSON.stringify({ name }) }),
+  createHousehold: (name: string, creatorName: string) =>
+    request<{ household: Household; userId: string }>("/households", { method: "POST", body: JSON.stringify({ name, creatorName }) }),
   getHousehold: (householdId: string) => request<Household>(`/households/${householdId}`),
+
+  requestLoginCode: (phoneE164: string) => request<{ ok: true }>("/auth/request-code", { method: "POST", body: JSON.stringify({ phoneE164 }) }),
+  verifyLoginCode: (phoneE164: string, code: string) =>
+    request<{ householdId: string; userId: string; userName: string }>("/auth/verify-code", {
+      method: "POST",
+      body: JSON.stringify({ phoneE164, code }),
+    }),
+  getSession: () => request<{ householdId: string; userId: string; userName: string }>("/auth/session"),
+  logout: () => request<{ ok: true }>("/auth/logout", { method: "POST" }),
 
   listUsers: (householdId: string) => request<User[]>(`/households/${householdId}/users`),
   createUser: (
