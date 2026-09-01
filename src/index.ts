@@ -16,6 +16,7 @@ import { plaidRoute } from "./routes/plaid";
 import { assetsRoute } from "./routes/assets";
 import { documentsRoute } from "./routes/documents";
 import { maintenanceRoute } from "./routes/maintenance";
+import { recurringPatternsRoute } from "./routes/recurringPatterns";
 import { plaidWebhookRoute } from "./routes/plaidWebhook";
 import { sendblueWebhookRoute } from "./routes/sendblueWebhook";
 import { handleQueueBatch } from "./queue/consumer";
@@ -61,6 +62,7 @@ scoped.route("/:householdId/plaid", plaidRoute);
 scoped.route("/:householdId/assets", assetsRoute);
 scoped.route("/:householdId/documents", documentsRoute);
 scoped.route("/:householdId/maintenance", maintenanceRoute);
+scoped.route("/:householdId/recurring-patterns", recurringPatternsRoute);
 
 app.route("/api/households", scoped);
 
