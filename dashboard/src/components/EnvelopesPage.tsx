@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { api, type Category, type Envelope, type EnvelopeMonthSummary } from "../api";
-import { formatCents } from "../format";
+import { api, type Category, type Envelope, type EnvelopeMonthSummary, type Transaction } from "../api";
+import { formatCents, currentMonth } from "../format";
 import { envelopeStatus, STATUS_BADGE_CLASS } from "../envelopeStatus";
 
 interface Props {
@@ -8,17 +8,137 @@ interface Props {
   categories: Category[];
   envelopes: Envelope[];
   envelopeSummaries: Record<string, EnvelopeMonthSummary>;
+  transactions: Transaction[];
   readyToAssignCents: number;
   onChanged: () => Promise<void>;
+  onTransactionsChanged: () => Promise<void>;
 }
 
-export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, readyToAssignCents, onChanged }: Props) {
+function EnvelopeDrilldown({
+  householdId,
+  envelope,
+  category,
+  categories,
+  transactions,
+  onTransactionsChanged,
+  onBalanceAdjusted,
+}: {
+  householdId: string;
+  envelope: Envelope;
+  category: Category | undefined;
+  categories: Category[];
+  transactions: Transaction[];
+  onTransactionsChanged: () => Promise<void>;
+  onBalanceAdjusted: () => Promise<void>;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [adjustAmount, setAdjustAmount] = useState("");
+  const [adjustNote, setAdjustNote] = useState("");
+  const [adjusting, setAdjusting] = useState(false);
+
+  const budgetableCategories = useMemo(
+    () => categories.filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings" || c.kind === "income")),
+    [categories],
+  );
+  const envelopeTransactions = useMemo(
+    () => transactions.filter((t) => t.category_id === envelope.category_id).sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1)),
+    [transactions, envelope.category_id],
+  );
+
+  async function moveTransaction(transactionId: string, categoryId: string) {
+    if (!categoryId || categoryId === envelope.category_id) return;
+    setBusyId(transactionId);
+    setError(null);
+    try {
+      await api.categorizeTransaction(householdId, transactionId, { categoryId });
+      await onTransactionsChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to move transaction");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function adjustBalance(e: FormEvent) {
+    e.preventDefault();
+    const cents = Math.round(Number(adjustAmount) * 100);
+    if (!Number.isFinite(cents) || cents === 0) return;
+    setAdjusting(true);
+    setError(null);
+    try {
+      await api.allocateToEnvelope(householdId, envelope.id, { month: currentMonth(), amountCents: cents, note: adjustNote.trim() || "Manual balance adjustment" });
+      setAdjustAmount("");
+      setAdjustNote("");
+      await onBalanceAdjusted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to adjust balance");
+    } finally {
+      setAdjusting(false);
+    }
+  }
+
+  return (
+    <div className="card card--padded" style={{ marginTop: -8, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <h3 style={{ margin: "0 0 4px" }}>{category?.name ?? "Envelope"} — transactions</h3>
+        <p className="hint" style={{ margin: 0 }}>Move a transaction to a different category, or adjust this envelope's balance with a one-time correction.</p>
+      </div>
+
+      <div className="row-list">
+        {envelopeTransactions.map((t) => (
+          <div className="row-item" key={t.id}>
+            <div className="row-figure" style={{ flex: "1 1 auto" }}>
+              <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
+              <span className="row-meta">{t.posted_at}</span>
+            </div>
+            <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
+              {formatCents(t.amount_cents)}
+            </span>
+            <select value={envelope.category_id} disabled={busyId === t.id} onChange={(e) => moveTransaction(t.id, e.target.value)}>
+              {budgetableCategories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+        {envelopeTransactions.length === 0 && (
+          <div className="row-item">
+            <span className="hint">No transactions in this envelope yet this period.</span>
+          </div>
+        )}
+      </div>
+
+      <form className="row" onSubmit={adjustBalance}>
+        <input
+          type="text"
+          inputMode="decimal"
+          placeholder="Adjust balance by $ (e.g. -25 or 100)"
+          value={adjustAmount}
+          onChange={(e) => setAdjustAmount(e.target.value)}
+          style={{ width: 220 }}
+        />
+        <input type="text" placeholder="Note (optional)" value={adjustNote} onChange={(e) => setAdjustNote(e.target.value)} style={{ flex: 1 }} />
+        <button type="submit" disabled={adjusting}>
+          Apply
+        </button>
+      </form>
+
+      {error && <p className="error">{error}</p>}
+    </div>
+  );
+}
+
+export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, transactions, readyToAssignCents, onChanged, onTransactionsChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newKind, setNewKind] = useState<"expense" | "savings">("expense");
   const [newGroup, setNewGroup] = useState("");
   const [newTarget, setNewTarget] = useState("");
   const [editing, setEditing] = useState<Record<string, { groupName: string; target: string; targetDate: string }>>({});
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const visible = useMemo(() => envelopes.filter((e) => !e.archived_at), [envelopes]);
@@ -124,8 +244,19 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
               const draft = editing[envelope.id];
               const status = envelopeStatus(envelope, summary);
               const pct = envelope.monthly_target_cents && summary ? Math.min(100, Math.max(0, (summary.spentCents / envelope.monthly_target_cents) * 100)) : null;
+              const isExpanded = expandedId === envelope.id;
               return (
-                <div className="row-item" key={envelope.id} style={i ? undefined : {}}>
+                <div key={envelope.id}>
+                <div
+                  className="row-item"
+                  style={{ ...(i ? {} : {}), cursor: "pointer" }}
+                  onClick={(ev) => {
+                    // Editing/archiving controls handle their own clicks —
+                    // only bare row space toggles the drill-down.
+                    if ((ev.target as HTMLElement).closest("button, input, select")) return;
+                    setExpandedId(isExpanded ? null : envelope.id);
+                  }}
+                >
                   <div className="row-figure" style={{ flex: "1 1 auto" }}>
                     <span className="row-title">{category?.name ?? "Unknown category"}</span>
                     {envelope.monthly_target_cents !== null && summary && (
@@ -184,6 +315,18 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
                       )}
                     </div>
                   )}
+                </div>
+                {isExpanded && (
+                  <EnvelopeDrilldown
+                    householdId={householdId}
+                    envelope={envelope}
+                    category={category}
+                    categories={categories}
+                    transactions={transactions}
+                    onTransactionsChanged={onTransactionsChanged}
+                    onBalanceAdjusted={onChanged}
+                  />
+                )}
                 </div>
               );
             })}

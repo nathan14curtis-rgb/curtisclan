@@ -318,8 +318,10 @@ export function App() {
             categories={categories}
             envelopes={envelopes}
             envelopeSummaries={envelopeSummaries}
+            transactions={transactions}
             readyToAssignCents={readyToAssignCents}
             onChanged={refreshCategoriesAndEnvelopes}
+            onTransactionsChanged={refreshTransactions}
           />
         )}
         {activeView === "Bills" && (
@@ -328,6 +330,7 @@ export function App() {
             categories={categories}
             envelopes={envelopes}
             envelopeSummaries={envelopeSummaries}
+            transactions={transactions}
             onChanged={refreshCategoriesAndEnvelopes}
           />
         )}
