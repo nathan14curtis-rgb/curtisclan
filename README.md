@@ -47,6 +47,79 @@ npm test          # vitest run — pure logic + D1-backed tests via miniflare
 npm run typecheck # tsc --noEmit
 ```
 
+## Getting your API credentials
+
+You need four things before this app can do anything real: a Cloudflare
+account (to run the Worker), a Plaid developer account (to pull bank
+transactions), a Sendblue account (to text you), and an Anthropic API key
+(to categorize). Sandbox/trial tiers exist for the first two and cost
+nothing until you flip to production.
+
+### 1. Cloudflare account + Wrangler login
+
+1. Sign up at [dash.cloudflare.com/sign-up](https://dash.cloudflare.com/sign-up)
+   (a free account is enough — Workers has a generous free tier, though
+   the two queues below need **Workers Paid**, $5/mo, per PLAN.md §11).
+2. Log Wrangler (already installed as a dev dependency — no separate
+   install needed) into that account from the repo root:
+   ```
+   npx wrangler login
+   ```
+   This opens a browser tab to authorize the CLI; approve it and the
+   terminal picks up the session automatically. Confirm it worked with:
+   ```
+   npx wrangler whoami
+   ```
+   If you manage multiple Cloudflare accounts, `wrangler login` will ask
+   which one to use, or set `CLOUDFLARE_ACCOUNT_ID` in your shell first.
+
+### 2. Plaid trial (sandbox) API keys
+
+1. Sign up at [dashboard.plaid.com/signup](https://dashboard.plaid.com/signup).
+   Every new account starts with free, unlimited **Sandbox** access — no
+   sales call or approval needed for that tier.
+2. In the Plaid dashboard, go to **Team Settings → Keys**. Copy the
+   `client_id` and the **Sandbox** `secret` — these are `PLAID_CLIENT_ID`
+   and `PLAID_SECRET` below.
+3. Leave `PLAID_ENV` set to `sandbox` and use Plaid's fake test
+   institution/credentials (`user_good` / `pass_good` at "Platypus Bank"
+   in Link) to exercise the whole flow end to end before touching a real
+   account — see PLAN.md §4.0 for why: the 10-Item cap on real
+   (production) accounts doesn't refund when you remove one.
+4. When you're ready for real accounts, Plaid requires a short
+   **Production access** application (a form describing your use case) —
+   submit it from the same dashboard under **Compliance/Production
+   Access**. Approval is typically same-day for a personal-use app like
+   this one. Once approved, generate a **Development** or **Production**
+   `secret` from the same Keys page and swap `PLAID_SECRET`/`PLAID_ENV`.
+
+### 3. Sendblue trial API keys
+
+1. Sign up at [sendblue.com](https://sendblue.com) and create a workspace.
+   New accounts get a trial/sandbox number and a small free message
+   allowance before you need to add a card.
+2. In the Sendblue dashboard, open **API Keys** (sometimes listed under
+   **Settings → Developers**) and copy the **API Key ID** and **API
+   Secret Key** — these are `SENDBLUE_API_KEY_ID` and
+   `SENDBLUE_API_SECRET_KEY` below.
+3. Note the phone number Sendblue assigned your account (dashboard
+   **Numbers**) — that's `SENDBLUE_FROM_NUMBER`.
+4. You'll set `SENDBLUE_SIGNING_SECRET` in step 5 of "Deploying for real"
+   below, once you create the webhook and Sendblue gives you a secret for
+   it.
+5. **Contact verification** (PLAN.md §5.0): on Sendblue's free/shared-line
+   plan, each phone number you want to text must first text *your*
+   Sendblue number once, or the API can't message it first. Do that for
+   every household member before calling `verify-phone` (README
+   "Register webhooks" below covers the rest of that flow).
+
+### 4. Anthropic API key
+
+Sign up at [console.anthropic.com](https://console.anthropic.com), create
+an API key under **Settings → API Keys**, and add a small amount of
+credit — that's `ANTHROPIC_API_KEY` below. Usage here is tiny (one Haiku
+call per uncategorized transaction, occasionally escalating to Sonnet).
+
 ## Deploying for real
 
 1. **Create the D1 database and apply migrations:**
@@ -59,8 +132,11 @@ npm run typecheck # tsc --noEmit
    npx wrangler queues create curtisclan-transactions
    npx wrangler queues create curtisclan-messages
    ```
-3. **Set secrets.** None of these belong in `wrangler.jsonc` or source
-   (PLAN.md §10):
+3. **Set secrets**, from the repo root, using the credentials gathered
+   above. `wrangler secret put <NAME>` prompts for the value interactively
+   (it isn't echoed and isn't saved in shell history) and stores it
+   encrypted server-side — never in `wrangler.jsonc` or source (PLAN.md
+   §10):
    ```
    # 32 random bytes, base64-encoded — encrypts Plaid access tokens at rest
    openssl rand -base64 32 | npx wrangler secret put TOKEN_ENCRYPTION_KEY
@@ -77,6 +153,9 @@ npm run typecheck # tsc --noEmit
 
    npx wrangler secret put ANTHROPIC_API_KEY
    ```
+   List what's set (names only, never values) at any point with
+   `npx wrangler secret list`; overwrite one later by running
+   `secret put` again with the same name.
 4. **Deploy:**
    ```
    npm run deploy
@@ -112,6 +191,46 @@ npm run typecheck # tsc --noEmit
    the Link flow working end to end in Sandbox, then switch
    `PLAID_ENV` to `production` and link your real Chase/Discover/Amex
    accounts deliberately.
+
+### If you put the Worker behind Cloudflare Access
+
+The app's own session auth (`src/lib/authMiddleware.ts`) already only
+guards `/api/households/:householdId/*` — `/webhooks/plaid/*` and
+`/webhooks/sendblue` are top-level routes that skip it entirely (see
+`src/index.ts`), since Plaid and Sendblue can't complete a login. That's
+enough on its own; you do **not** need Cloudflare Access for the app to
+work.
+
+The one time this matters is if you additionally put the whole
+`*.workers.dev` URL (or a custom domain routed to it) behind **Cloudflare
+Zero Trust / Access** — e.g. to require Google/GitHub SSO before anyone
+can even reach the dashboard's login page. In that case Access intercepts
+every request *before* it reaches the Worker, including Plaid's and
+Sendblue's webhook calls, and they'll fail (Plaid retries and eventually
+disables the webhook; Sendblue just drops the delivery). Give the webhook
+paths a bypass policy so Access lets them straight through:
+
+1. In the Cloudflare dashboard, go to **Zero Trust → Access → Applications**
+   and open the application covering your Worker's domain (or create one
+   if you haven't yet — **Add an application → Self-hosted**, pointing at
+   your Worker's hostname).
+2. Add a second application (or a second policy on the existing one)
+   scoped to the path `/webhooks/*` under that same hostname.
+3. Set that policy's action to **Bypass** (not Allow — Bypass skips the
+   Access authentication check entirely, which is what an unauthenticated
+   webhook call needs) with an "Everyone" include rule, since Plaid/Sendblue
+   can't present any Access identity.
+4. Make sure this `/webhooks/*` policy is evaluated *before* (i.e. is more
+   specific than) whatever broader policy protects the rest of the site —
+   Access applies the most specific matching path.
+5. From the terminal, confirm the bypass actually works once deployed:
+   ```
+   curl -i https://<your-domain>/webhooks/sendblue
+   ```
+   This should reach the Worker (a 4xx from `sendblueWebhookRoute` itself,
+   e.g. "missing signature") rather than an Access login redirect/HTML
+   page. If you see an Access login page instead, the bypass policy isn't
+   matching yet.
 
 ## Project layout
 
