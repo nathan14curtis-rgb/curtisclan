@@ -1,93 +1,10 @@
-# Curtis Clan
+# Home Base
 
 Self-owned budgeting app on Cloudflare Workers, fed by Plaid, with an
 iMessage loop that asks what a charge was and understands the answer in
 plain English. Full design in [`docs/PLAN.md`](docs/PLAN.md).
 
-## What's built
-
-**Phase 0 (Foundations):** Worker + Hono + D1, the full data model
-(`migrations/*.sql`), a household-scoped data access layer, the default
-category taxonomy with auto-created envelopes, CSV import, and a REST API
-over all of it.
-
-**Phase 1 (Plaid ingest):** Link flow (`src/routes/plaid.ts`), a
-fetch-based Plaid REST client (`src/plaid/client.ts` — the official SDK is
-axios-based and fights the Workers runtime, PLAN.md §2), ES256 webhook JWT
-verification with a real crypto round-trip test (`src/plaid/webhookAuth.ts`),
-`/transactions/sync` cursor-based ingest with pending→posted carry-over
-and transfer detection (`src/plaid/sync.ts`, `src/db/transfers.ts`),
-`ITEM_LOGIN_REQUIRED` handling, and nightly cron reconciliation.
-
-**Phase 2 (Categorization):** the full four-layer cascade — rules, merchant
-memory, a real Claude Haiku 4.5 call (escalating to Sonnet 5 on low
-confidence) via the official `@anthropic-ai/sdk`, strict structured tool
-output, prompt caching on the taxonomy, and a Batch API path for future
-bulk backfills (`src/categorization/llm.ts`).
-
-**Phase 3 (iMessage loop):** Sendblue send/inbound webhooks, phone
-verification via `POST /:householdId/users/:userId/verify-phone`, the
-batched reply resolver (PLAN.md §5.2 — one Claude call pairs a free-text
-reply against every open clarification), the confirmation message
-(§5.3), a "fix &lt;merchant&gt;" correction flow, and quiet-hours-aware
-sending via a low-concurrency outbound queue.
-
-**One shared group chat, not per-owner 1:1 texts:** every clarification,
-confirmation, and correction goes to a single household-level iMessage
-group thread (`src/messaging/groupChat.ts`) instead of whichever spouse
-owns the card that charge landed on. This is the answer to PLAN.md §13
-Q6 ("ask a designated default, or ask both?") the household actually
-wanted: ask everyone, in one thread. The group is created on the first
-message (Sendblue's `/send-group-message` with every verified number) and
-its `group_id` is reused for every later send; either spouse can answer
-any open charge (attributed to whoever actually replied), and quiet hours
-now wait for *whichever* spouse's window ends latest rather than one
-fixed recipient's. Since the recipient is no longer implicitly "the card
-owner," each question names the account too: `"$47.83 at THE HIVE
-MERCANTILE (Amex). What was this?"`
-
-**121 tests**, `vitest run` green, `tsc --noEmit` clean. Pure logic is
-tested directly (including a real generated ES256 keypair signing/
-verifying an actual JWT — not a mocked crypto call); D1-backed code runs
-against a real migrated database via `@cloudflare/vitest-pool-workers`
-(miniflare), including the group-send/quiet-hours paths tested against a
-real D1 + a stubbed `fetch` intercepting the Sendblue call; the
-Claude-calling code is tested against a fake `Anthropic` client double,
-since this environment holds no live API keys.
-
-**Phase 4 (Dashboard, started):** a Vite/React SPA (`dashboard/`), built to
-`dashboard/dist` and served by the same Worker via Workers Assets — same
-origin, so it just calls relative `/api/...` paths. What exists so far is
-the Setup page: create the household and people, verify phone numbers,
-Plaid Link (real browser-driven linking — this is why it lives in the
-dashboard rather than something scriptable via curl), a manual
-"add an account" fallback for CSV-only history, and CSV import with
-column-mapping auto-detected from the file's own header row. Verified in
-a real headless browser (Playwright) end to end: create household → add
-person → link/add an account → import a CSV → see the transactions land
-correctly categorized.
-
-### Deliberately not built yet
-
-- **Phase 4, the rest of it**: Home (Ready to Assign + envelope list),
-  Transactions (list/inline-edit/split), Rules UI (PLAN.md §9) — the
-  Setup page above is the only page so far.
-- **Full intent parsing** (PLAN.md §5.4, §13 Q13): a reply that arrives
-  with nothing open falls through silently rather than answering
-  free-form questions like "how much on food this month?" — that's an
-  explicitly open product decision, not yet built.
-- **Nightly Batch API orchestration**: `submitCategorizationBatch` /
-  `parseCategorizationBatchResults` exist and are tested, but nothing yet
-  tracks a batch id across cron ticks to drive a bulk backfill job.
-- **Adding a member to an existing group chat**: the household group is
-  created once from whoever is verified at that moment; a user verified
-  afterward isn't auto-added (Sendblue's `/modify-group` endpoint would
-  do this — not wired up).
-- **Live end-to-end verification**: this build environment holds no real
-  Plaid/Sendblue/Anthropic credentials, so nothing here has been run
-  against the actual services — only against real D1/crypto and faked
-  API clients. Test the Link flow against **Plaid Sandbox** before
-  linking a real account (PLAN.md §4.0 — Item slots don't come back).
+Thank you for using! Please email nathan14curtis@gmail.com with suggestions for UX changes and improvements.
 
 ## Setup
 
