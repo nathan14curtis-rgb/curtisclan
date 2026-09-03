@@ -73,7 +73,7 @@ nothing until you flip to production.
    If you manage multiple Cloudflare accounts, `wrangler login` will ask
    which one to use, or set `CLOUDFLARE_ACCOUNT_ID` in your shell first.
 
-### 2. Plaid trial (sandbox) API keys
+### 2. Plaid trial API keys
 
 1. Sign up at [dashboard.plaid.com/signup](https://dashboard.plaid.com/signup).
    Every new account starts with free, unlimited **Sandbox** access — no
@@ -127,7 +127,7 @@ call per uncategorized transaction, occasionally escalating to Sonnet).
    npx wrangler d1 create curtisclan   # paste the returned database_id into wrangler.jsonc
    npx wrangler d1 migrations apply curtisclan --remote
    ```
-2. **Create the two queues** (Workers Paid plan required — PLAN.md §11):
+2. **Create the two queues**
    ```
    npx wrangler queues create curtisclan-transactions
    npx wrangler queues create curtisclan-messages
