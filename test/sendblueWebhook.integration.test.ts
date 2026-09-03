@@ -48,9 +48,13 @@ function inboundPayload(overrides: Record<string, unknown> = {}) {
  * its bindings from the wrangler config instead of the mutated object.
  * The response body is drained before returning so nothing is left
  * undisposed when the isolated-storage frame pops between tests. */
-async function postWebhook(body: unknown, headers: Record<string, string> = { "sb-signing-secret": SIGNING_SECRET }) {
+async function postWebhook(
+  body: unknown,
+  headers: Record<string, string> = { "sb-signing-secret": SIGNING_SECRET },
+  path = "/webhooks/sendblue",
+) {
   const res = await worker.fetch(
-    new Request("https://example.test/webhooks/sendblue", {
+    new Request(`https://example.test${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: typeof body === "string" ? body : JSON.stringify(body),
@@ -163,6 +167,28 @@ describe("POST /webhooks/sendblue", () => {
 
     expect(sent).toHaveLength(0);
     expect(await findInboundMessageByHandle(db, payload.message_handle)).toBeNull();
+  });
+
+
+  it("accepts the webhook URL with a trailing slash", async () => {
+    // A trailing slash used to fall through to Hono's default 404, which
+    // logs nothing — the same observable behaviour as Sendblue never
+    // calling at all, and impossible to tell apart from the outside.
+    const { household } = await seedVerifiedUser("+13035557777");
+    captureQueue();
+    const payload = inboundPayload({ from_number: "+13035557777" });
+
+    const res = await postWebhook(payload, { "sb-signing-secret": SIGNING_SECRET }, "/webhooks/sendblue/");
+
+    expect(res.status).toBe(200);
+    const stored = await findInboundMessageByHandle(db, payload.message_handle);
+    expect(stored?.household_id).toBe(household.id);
+  });
+
+  it("404s a misdirected /webhooks/* path loudly instead of silently", async () => {
+    const res = await postWebhook(inboundPayload(), { "sb-signing-secret": SIGNING_SECRET }, "/webhooks/sendblu");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
   });
 
   it("returns 400 rather than a generic 500 on a non-JSON body", async () => {
