@@ -129,3 +129,27 @@ export async function listVerifiedUsersForHousehold(db: D1Database, householdId:
     .all<User>();
   return results;
 }
+
+/** Fallback for findUserByVerifiedPhone when an exact E.164 match misses.
+ * Sendblue's inbound `from_number` has been observed with formatting that
+ * survives normalization differently than what was stored at verification
+ * time (a country code that is present on one side and not the other, an
+ * extra leading digit). Matching on the last 10 digits — the NANP
+ * subscriber number — recovers those without ever widening the match to a
+ * different person: two verified household numbers cannot share a
+ * 10-digit suffix in practice, and if somehow more than one row matches,
+ * this returns null rather than guess at which human sent the text. */
+export async function findUserByVerifiedPhoneSuffix(db: D1Database, phoneE164: string): Promise<User | null> {
+  const digits = phoneE164.replace(/[^\d]/g, "");
+  if (digits.length < 10) return null;
+  const suffix = digits.slice(-10);
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM user
+         WHERE phone_verified_at IS NOT NULL
+           AND replace(replace(replace(replace(replace(phone_e164, '+', ''), '-', ''), ' ', ''), '(', ''), ')', '') LIKE ?`,
+    )
+    .bind(`%${suffix}`)
+    .all<User>();
+  return results.length === 1 ? results[0]! : null;
+}

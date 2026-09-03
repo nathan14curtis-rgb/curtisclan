@@ -17,6 +17,7 @@ import { assetsRoute } from "./routes/assets";
 import { documentsRoute } from "./routes/documents";
 import { maintenanceRoute } from "./routes/maintenance";
 import { recurringPatternsRoute } from "./routes/recurringPatterns";
+import { messagingDiagnosticsRoute } from "./routes/messagingDiagnostics";
 import { plaidWebhookRoute } from "./routes/plaidWebhook";
 import { sendblueWebhookRoute } from "./routes/sendblueWebhook";
 import { handleQueueBatch } from "./queue/consumer";
@@ -27,7 +28,12 @@ import type { MessageQueueMessage, TransactionQueueMessage } from "./lib/queueMe
 // Must match the second entry in wrangler.jsonc's triggers.crons exactly.
 const DAILY_DIGEST_CRON = "0 13 * * *";
 
-const app = new Hono<{ Bindings: Env }>();
+// strict: false so "/webhooks/sendblue/" matches the same route as
+// "/webhooks/sendblue". A trailing slash used to fall through to Hono's
+// default 404, which logs nothing at all — indistinguishable from the
+// provider never calling us, and the single hardest version of this bug
+// to diagnose. Nothing here relies on the two paths being distinct.
+const app = new Hono<{ Bindings: Env }>({ strict: false });
 
 app.onError((err, c) => {
   if (err instanceof NotFoundError) return c.json({ error: err.message }, 404);
@@ -63,6 +69,7 @@ scoped.route("/:householdId/assets", assetsRoute);
 scoped.route("/:householdId/documents", documentsRoute);
 scoped.route("/:householdId/maintenance", maintenanceRoute);
 scoped.route("/:householdId/recurring-patterns", recurringPatternsRoute);
+scoped.route("/:householdId/messaging", messagingDiagnosticsRoute);
 
 app.route("/api/households", scoped);
 
@@ -71,6 +78,17 @@ app.route("/api/households", scoped);
 // resolves (or verifies) the household itself (PLAN §4.1, §10).
 app.route("/webhooks/plaid", plaidWebhookRoute);
 app.route("/webhooks/sendblue", sendblueWebhookRoute);
+
+// Anything else under /webhooks/* is a provider calling a URL we don't
+// serve — a typo, a stale path, a webhook pointed at the wrong Worker.
+// Hono's default 404 is silent, so this was the one arrival that left no
+// trace anywhere and looked exactly like "the request never came".
+app.all("/webhooks/*", (c) => {
+  console.error(
+    `[webhooks] no route for ${c.req.method} ${new URL(c.req.url).pathname} — the provider is calling a URL this Worker does not serve. Valid paths: POST /webhooks/sendblue, POST /webhooks/plaid/:householdId`,
+  );
+  return c.json({ error: "no such webhook endpoint" }, 404);
+});
 
 export default {
   fetch: app.fetch,
