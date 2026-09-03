@@ -48,3 +48,20 @@ export async function createInboundMessage(
 export async function markInboundMessageProcessed(db: D1Database, id: string): Promise<void> {
   await db.prepare(`UPDATE inbound_message SET processed_at = ? WHERE id = ?`).bind(nowIso(), id).run();
 }
+
+/** Most recent inbound texts for a household, plus the ones that arrived
+ * from a number that matched no verified user (household_id IS NULL) —
+ * those are invisible to every household-scoped query but are exactly the
+ * rows that explain "I texted in and nothing happened." Powers
+ * GET /api/households/:householdId/messaging/diagnostics. */
+export async function listInboundMessagesForDiagnostics(db: D1Database, householdId: string, limit = 20): Promise<InboundMessage[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT * FROM inbound_message
+         WHERE household_id = ? OR household_id IS NULL
+         ORDER BY received_at DESC LIMIT ?`,
+    )
+    .bind(householdId, limit)
+    .all<InboundMessage>();
+  return results;
+}

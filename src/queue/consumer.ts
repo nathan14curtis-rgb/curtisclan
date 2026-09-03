@@ -4,6 +4,7 @@ import { describeError } from "../lib/errors";
 import { sendDailyDigest } from "../messaging/dailyDigest";
 import { processInboundReply } from "../messaging/inboundProcessing";
 import { processSendClarification } from "../messaging/sendClarification";
+import { sendToHouseholdGroup } from "../messaging/groupChat";
 import { handleItemWebhook, syncPlaidItem } from "../plaid/sync";
 import type { MessageQueueMessage, TransactionQueueMessage } from "../lib/queueMessages";
 import type { Env } from "../types";
@@ -45,8 +46,29 @@ async function handleTransactionQueueMessage(msg: TransactionQueueMessage, env: 
       return;
     case "resolve_reply": {
       const inbound = await getInboundMessage(env.DB, msg.inboundMessageId);
-      if (!inbound) return;
-      await processInboundReply(env, msg.householdId, msg.userId, inbound.content);
+      if (!inbound) {
+        console.error(`[queue] resolve_reply: inbound message ${msg.inboundMessageId} not found — nothing to process`);
+        return;
+      }
+      if (inbound.processed_at) {
+        console.log(`[queue] resolve_reply: inbound ${inbound.id} already processed at ${inbound.processed_at} — skipping redelivery`);
+        return;
+      }
+      try {
+        await processInboundReply(env, msg.householdId, msg.userId, inbound.content);
+      } catch (err) {
+        // processInboundReply handles its own expected failures by texting
+        // the household back. Anything reaching here is unexpected, and
+        // rethrowing would retry five times and then drop the reply
+        // silently — the person who texted in never learns their message
+        // died. Tell them once, mark it processed, and let the queue ack:
+        // a retry of an unexpected error is overwhelmingly likely to fail
+        // the same way while re-running whatever partial work succeeded.
+        console.error(`[queue] resolve_reply failed for inbound ${inbound.id} (household ${msg.householdId}): ${describeError(err)}`);
+        await sendToHouseholdGroup(env, msg.householdId, "Got your text, but something went wrong on my end handling it — try again, or categorize it from the dashboard.").catch((sendErr) => {
+          console.error(`[queue] resolve_reply: could not notify household ${msg.householdId} of the failure: ${describeError(sendErr)}`);
+        });
+      }
       await markInboundMessageProcessed(env.DB, inbound.id);
       return;
     }

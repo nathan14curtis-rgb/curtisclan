@@ -192,6 +192,42 @@ call per uncategorized transaction, occasionally escalating to Sonnet).
    `PLAID_ENV` to `production` and link your real Chase/Discover/Amex
    accounts deliberately.
 
+### When the texting bot doesn't respond
+
+Every way the inbound loop can break is silent from the phone's side — the
+text just does nothing. Start here rather than guessing:
+
+```
+GET /api/households/<householdId>/messaging/diagnostics
+```
+
+It reports, from stored state, which secrets the deployed Worker actually
+has, who is verified, and the last 20 texts Sendblue delivered. Read it
+top-down:
+
+- **`config.sendblueSigningSecretSet` is false** — the webhook rejects
+  every delivery with a 503. Run
+  `npx wrangler secret put SENDBLUE_SIGNING_SECRET` and set the same value
+  on the Sendblue webhook.
+- **`inbound` is empty** — Sendblue never reached the Worker at all.
+  Nothing downstream can be at fault. Check the webhook URL in the
+  Sendblue dashboard against `config.webhookUrlToConfigureInSendblue`,
+  and check that its signing secret matches the deployed one (a mismatch
+  logs `[sendblueWebhook] rejected` and returns 401).
+- **`unmatchedNumbers` lists the number you texted from** — the webhook
+  fired and the text was recorded, but no *verified* user owns that
+  number, so it was deliberately never processed (§10: an unverified
+  number must not elicit a response). Bind it with
+  `POST /api/households/<householdId>/users/<userId>/verify-phone`.
+- **`unprocessed` is non-zero** — the text was queued but never finished.
+  Check the Worker logs for `[queue] resolve_reply`.
+- **`config.anthropicApiKeySet` is false** — replies are received but
+  can't be matched to a charge; the bot texts back saying so.
+
+Worker logs (Cloudflare dashboard → Workers → curtisclan → Logs) carry a
+`[sendblueWebhook]` line naming the reason for every single drop, and a
+`[inboundReply]` / `[queue] resolve_reply` line for everything after it.
+
 ### If you put the Worker behind Cloudflare Access
 
 The app's own session auth (`src/lib/authMiddleware.ts`) already only

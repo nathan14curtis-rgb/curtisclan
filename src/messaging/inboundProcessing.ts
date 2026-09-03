@@ -77,7 +77,24 @@ export async function processInboundReply(env: Env, householdId: string, userId:
     return;
   }
 
-  const openTransactions = await Promise.all(open.map((c) => getTransaction(env.DB, householdId, c.transaction_id)));
+  // getTransaction throws NotFoundError for a clarification whose
+  // transaction is gone (a Plaid `removed` entry, a manual delete). Inside
+  // Promise.all that rejection used to abort the whole reply — one stale
+  // clarification and every other candidate in the batch went unanswered,
+  // with the failure surfacing only as a queue retry. Skip the missing one
+  // and carry on with the rest.
+  const openTransactions = (
+    await Promise.all(
+      open.map(async (c) => {
+        try {
+          return await getTransaction(env.DB, householdId, c.transaction_id);
+        } catch (err) {
+          console.error(`[inboundReply] clarification ${c.id} points at missing transaction ${c.transaction_id}: ${describeError(err)}`);
+          return null;
+        }
+      }),
+    )
+  ).filter((t): t is Transaction => t !== null);
 
   // Dedup by transaction id — a transaction can carry both a low-confidence
   // guess (so it's already categorized) and an open clarification asking
