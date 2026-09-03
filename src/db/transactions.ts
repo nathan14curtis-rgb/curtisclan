@@ -1,5 +1,5 @@
 import { newId } from "../lib/id";
-import type { ClassificationMethod, Transaction, TransactionSource } from "../types";
+import type { ClassificationMethod, Transaction, TransactionFlagColor, TransactionSource } from "../types";
 import { getScoped, NotFoundError, nowIso } from "./client";
 import { recordClassification } from "./classifications";
 import { reinforceMerchantMemory } from "./merchantMemory";
@@ -65,6 +65,7 @@ export async function createTransaction(
     source: input.source ?? "plaid",
     verified_by_user_id: null,
     verified_at: null,
+    flag_color: null,
     created_at: now,
     updated_at: now,
   };
@@ -364,6 +365,61 @@ export async function setTransactionExcluded(db: D1Database, householdId: string
   const result = await db
     .prepare(`UPDATE "transaction" SET excluded_from_budget = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
     .bind(excluded ? 1 : 0, now, id, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", id);
+  return getTransaction(db, householdId, id);
+}
+
+export interface EditTransactionInput {
+  categoryId: string;
+  amountCents: number;
+  editedByUserId?: string | null;
+}
+
+/**
+ * The dashboard's pencil-edit flow (Transactions page): a household member
+ * corrects the category and the amount in one save. Saving counts as
+ * verifying the row — the same explicit human confirmation the standalone
+ * verify control records, just folded into the one action instead of two.
+ */
+export async function editTransaction(
+  db: D1Database,
+  householdId: string,
+  transactionId: string,
+  input: EditTransactionInput,
+): Promise<Transaction> {
+  const categorized = await applyCategorization(db, householdId, transactionId, {
+    categoryId: input.categoryId,
+    method: "human",
+    createdByUserId: input.editedByUserId,
+  });
+
+  const now = nowIso();
+  const result = await db
+    .prepare(
+      `UPDATE "transaction" SET amount_cents = ?, verified_by_user_id = ?, verified_at = ?, updated_at = ?
+       WHERE id = ? AND household_id = ?`,
+    )
+    .bind(input.amountCents, input.editedByUserId ?? null, input.editedByUserId ? now : null, now, transactionId, householdId)
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", transactionId);
+
+  return {
+    ...categorized,
+    amount_cents: input.amountCents,
+    verified_by_user_id: input.editedByUserId ?? null,
+    verified_at: input.editedByUserId ? now : null,
+    updated_at: now,
+  };
+}
+
+/** A purely visual marker a household member sets by hand — never touched
+ * by categorization or verification, so it survives both untouched. */
+export async function setTransactionFlag(db: D1Database, householdId: string, id: string, color: TransactionFlagColor | null): Promise<Transaction> {
+  const now = nowIso();
+  const result = await db
+    .prepare(`UPDATE "transaction" SET flag_color = ?, updated_at = ? WHERE id = ? AND household_id = ?`)
+    .bind(color, now, id, householdId)
     .run();
   if (result.meta.changes === 0) throw new NotFoundError("transaction", id);
   return getTransaction(db, householdId, id);
