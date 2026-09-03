@@ -24,6 +24,7 @@ export type AccessLevel = "full" | "limited" | "view_only";
 export type AssetType = "property" | "vehicle" | "appliance" | "other";
 export type DocumentCategory = "insurance" | "warranty" | "identification" | "passwords";
 export type VerifyState = "me" | "ai" | "none";
+export type TransactionFlagColor = "red" | "orange" | "yellow" | "green" | "blue" | "purple";
 export type MaintenanceStatus = "scheduled" | "due_soon" | "overdue" | "done";
 
 export interface Household {
@@ -100,6 +101,7 @@ export interface Transaction {
   source: "plaid" | "csv_import" | "manual";
   verified_by_user_id: string | null;
   verified_at: string | null;
+  flag_color: TransactionFlagColor | null;
   // "me" (verified_by_user_id set) / "ai" (latest classification is
   // rule/memory/llm, never explicitly verified) / "none" — computed by
   // listTransactionsWithVerifyState, not stored.
@@ -263,6 +265,10 @@ export const api = {
   },
   categorizeTransaction: (householdId: string, transactionId: string, input: { categoryId: string; memo?: string }) =>
     request<Transaction>(`/households/${householdId}/transactions/${transactionId}/categorize`, { method: "PATCH", body: JSON.stringify(input) }),
+  editTransaction: (householdId: string, transactionId: string, input: { categoryId: string; amountCents: number; editedByUserId?: string }) =>
+    request<Transaction>(`/households/${householdId}/transactions/${transactionId}/edit`, { method: "PATCH", body: JSON.stringify(input) }),
+  setTransactionFlag: (householdId: string, transactionId: string, color: TransactionFlagColor | null) =>
+    request<Transaction>(`/households/${householdId}/transactions/${transactionId}/flag`, { method: "POST", body: JSON.stringify({ color }) }),
   setTransactionExcluded: (householdId: string, transactionId: string, excluded: boolean) =>
     request<Transaction>(`/households/${householdId}/transactions/${transactionId}/exclude`, {
       method: "POST",

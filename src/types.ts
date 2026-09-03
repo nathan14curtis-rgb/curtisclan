@@ -5,6 +5,7 @@ export type CategoryKind = "expense" | "income" | "savings" | "transfer";
 export type AccountType = "depository_checking" | "depository_savings" | "credit_card" | "other";
 export type AccountStatus = "active" | "login_required" | "removed";
 export type TransactionSource = "plaid" | "csv_import" | "manual";
+export type TransactionFlagColor = "red" | "orange" | "yellow" | "green" | "blue" | "purple";
 export type ClassificationMethod = "rule" | "memory" | "llm" | "human";
 export type AllocationSource = "income_assignment" | "envelope_move" | "correction";
 export type ClarificationStatus = "queued" | "sent" | "answered" | "timed_out";
@@ -157,6 +158,7 @@ export interface Transaction {
   source: TransactionSource;
   verified_by_user_id: string | null;
   verified_at: string | null;
+  flag_color: TransactionFlagColor | null;
   created_at: string;
   updated_at: string;
 }

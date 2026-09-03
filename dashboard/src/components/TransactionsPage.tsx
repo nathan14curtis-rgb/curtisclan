@@ -1,7 +1,11 @@
 import { useMemo, useState } from "react";
-import { api, type Account, type Category, type Transaction, type User, type VerifyState } from "../api";
+import { api, type Account, type Category, type Transaction, type TransactionFlagColor, type User, type VerifyState } from "../api";
 import { dayLabel, formatCents } from "../format";
+import { CheckIcon } from "./icons/CheckIcon";
+import { PencilIcon } from "./icons/PencilIcon";
 import { RobotIcon } from "./icons/RobotIcon";
+
+const FLAG_COLORS: TransactionFlagColor[] = ["red", "orange", "yellow", "green", "blue", "purple"];
 
 interface Props {
   householdId: string;
@@ -54,13 +58,11 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const [quickFilter, setQuickFilter] = useState<QuickFilter>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  // Setting busyId re-renders immediately (to disable the control while the
-  // request is in flight) but transactions[] — owned by App — doesn't
-  // update until onChanged()'s round trip resolves. Without this overlay,
-  // that intermediate render forces the checkbox back to its still-stale
-  // checked value, visibly reverting the user's own click for a moment.
-  const [pendingExcluded, setPendingExcluded] = useState<Record<string, boolean>>({});
-  const [pendingVerified, setPendingVerified] = useState<Record<string, boolean>>({});
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftCategoryId, setDraftCategoryId] = useState("");
+  const [draftAmount, setDraftAmount] = useState("");
+  const [draftExcluded, setDraftExcluded] = useState(false);
+  const [flagMenuId, setFlagMenuId] = useState<string | null>(null);
 
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
@@ -137,67 +139,54 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const inCents = nonTransferFiltered.filter((t) => t.amount_cents > 0).reduce((sum, t) => sum + t.amount_cents, 0);
   const uncategorizedCount = filtered.filter((t) => !t.category_id && !t.is_transfer).length;
 
-  async function setCategory(transactionId: string, categoryId: string) {
-    if (!categoryId) return;
-    setBusyId(transactionId);
-    setError(null);
-    try {
-      await api.categorizeTransaction(householdId, transactionId, { categoryId });
-      await onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to categorize");
-    } finally {
-      setBusyId(null);
-    }
+  function startEdit(t: Transaction) {
+    setEditingId(t.id);
+    setDraftCategoryId(t.category_id ?? "");
+    setDraftAmount((t.amount_cents / 100).toFixed(2));
+    setDraftExcluded(Boolean(t.excluded_from_budget));
   }
 
-  async function toggleExcluded(transactionId: string, excluded: boolean) {
-    setPendingExcluded((prev) => ({ ...prev, [transactionId]: excluded }));
-    setBusyId(transactionId);
-    setError(null);
-    try {
-      await api.setTransactionExcluded(householdId, transactionId, excluded);
-      await onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update");
-    } finally {
-      setBusyId(null);
-      setPendingExcluded((prev) => {
-        const { [transactionId]: _, ...rest } = prev;
-        return rest;
-      });
-    }
+  function cancelEdit() {
+    setEditingId(null);
   }
 
-// Toggling verify off resets an unconfirmed automatic guess back to
-// "needs review" instead of leaving it looking settled — see
-// clearCategorization's doc comment (src/db/transactions.ts). A category a
-// human actually set by hand (verify_state 'me' before the toggle, or
-// 'none' with a category already chosen) is left alone; only 'ai' gets
-// cleared.
-  async function toggleVerified(t: Transaction, verified: boolean) {
-    setPendingVerified((prev) => ({ ...prev, [t.id]: verified }));
+  async function saveEdit(t: Transaction) {
+    const cents = Math.round(parseFloat(draftAmount) * 100);
+    if (!draftCategoryId || Number.isNaN(cents)) {
+      setError("Enter a category and a valid amount");
+      return;
+    }
     setBusyId(t.id);
     setError(null);
     try {
-      if (verified) {
-        if (!currentUserId) throw new Error("Not signed in");
-        await api.verifyTransaction(householdId, t.id, currentUserId);
-      } else {
-        await api.unverifyTransaction(householdId, t.id);
-        if (t.verify_state === "ai") {
-          await api.uncategorizeTransaction(householdId, t.id, currentUserId ?? undefined);
-        }
+      await api.editTransaction(householdId, t.id, {
+        categoryId: draftCategoryId,
+        amountCents: cents,
+        editedByUserId: currentUserId ?? undefined,
+      });
+      if (draftExcluded !== Boolean(t.excluded_from_budget)) {
+        await api.setTransactionExcluded(householdId, t.id, draftExcluded);
       }
       await onChanged();
+      setEditingId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update verification");
+      setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setBusyId(null);
-      setPendingVerified((prev) => {
-        const { [t.id]: _, ...rest } = prev;
-        return rest;
-      });
+    }
+  }
+
+  async function setFlag(transactionId: string, color: TransactionFlagColor | null) {
+    setFlagMenuId(null);
+    setBusyId(transactionId);
+    setError(null);
+    try {
+      await api.setTransactionFlag(householdId, transactionId, color);
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update flag");
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -366,8 +355,38 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
             {group.rows.map((t) => {
               const category = t.category_id ? categoryById.get(t.category_id) : null;
               const mark = VERIFY_MARK[t.verify_state];
+              const isEditing = editingId === t.id;
+              const isBusy = busyId === t.id;
               return (
                 <div className="row-item" key={t.id}>
+                  <div style={{ position: "relative", flex: "0 0 auto" }}>
+                    <button
+                      type="button"
+                      className={`flag-dot ${t.flag_color ? `flag-dot--${t.flag_color}` : ""}`}
+                      title={t.flag_color ? `Flagged ${t.flag_color}` : "Flag this transaction"}
+                      disabled={isBusy}
+                      onClick={() => setFlagMenuId((id) => (id === t.id ? null : t.id))}
+                    />
+                    {flagMenuId === t.id && (
+                      <>
+                        <div style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => setFlagMenuId(null)} />
+                        <div className="flag-menu">
+                          {FLAG_COLORS.map((color) => (
+                            <button
+                              key={color}
+                              type="button"
+                              className={`flag-dot flag-dot--${color}`}
+                              title={color}
+                              onClick={() => setFlag(t.id, color)}
+                            />
+                          ))}
+                          {t.flag_color && (
+                            <button type="button" className="flag-dot" title="Clear flag" onClick={() => setFlag(t.id, null)} />
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <span className="row-avatar">{initials(t.normalized_merchant ?? t.raw_description)}</span>
                   <div className="row-figure" style={{ flex: "1 1 auto" }}>
                     <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
@@ -375,8 +394,8 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
                   </div>
                   {t.is_transfer ? (
                     <span className="badge">transfer</span>
-                  ) : (
-                    <select value={t.category_id ?? ""} disabled={busyId === t.id} onChange={(e) => setCategory(t.id, e.target.value)}>
+                  ) : isEditing ? (
+                    <select value={draftCategoryId} disabled={isBusy} onChange={(e) => setDraftCategoryId(e.target.value)}>
                       <option value="" disabled>
                         Needs review
                       </option>
@@ -386,28 +405,56 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
                         </option>
                       ))}
                     </select>
+                  ) : (
+                    <span className={`category-chip ${category ? "" : "category-chip--empty"}`}>{category?.name ?? "Needs review"}</span>
                   )}
-                  <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
-                    {formatCents(t.amount_cents)}
+                  {isEditing ? (
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="amount-edit-input"
+                      value={draftAmount}
+                      disabled={isBusy}
+                      onChange={(e) => setDraftAmount(e.target.value)}
+                    />
+                  ) : (
+                    <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
+                      {formatCents(t.amount_cents)}
+                    </span>
+                  )}
+                  <span className={mark.className} title={mark.label} style={{ flex: "0 0 auto" }}>
+                    {mark.content}
                   </span>
-                  <label className="row" style={{ gap: 6, flex: "0 0 auto" }} title={mark.label}>
-                    <input
-                      type="checkbox"
-                      checked={pendingVerified[t.id] ?? t.verify_state === "me"}
-                      disabled={busyId === t.id}
-                      onChange={(e) => toggleVerified(t, e.target.checked)}
-                    />
-                    <span className={mark.className}>{mark.content}</span>
-                  </label>
-                  <label className="row" style={{ gap: 6, flex: "0 0 auto" }}>
-                    <input
-                      type="checkbox"
-                      checked={pendingExcluded[t.id] ?? Boolean(t.excluded_from_budget)}
-                      disabled={busyId === t.id}
-                      onChange={(e) => toggleExcluded(t.id, e.target.checked)}
-                      title="Exclude from budget"
-                    />
-                  </label>
+                  {!t.is_transfer &&
+                    (isEditing ? (
+                      <div className="row" style={{ gap: 8, flex: "0 0 auto" }}>
+                        <label className="row" style={{ gap: 4, fontSize: 12 }} title="Exclude from budget">
+                          <input
+                            type="checkbox"
+                            checked={draftExcluded}
+                            disabled={isBusy}
+                            onChange={(e) => setDraftExcluded(e.target.checked)}
+                          />
+                          Exclude
+                        </label>
+                        <button type="button" className="row-edit-btn" title="Cancel" onClick={cancelEdit} disabled={isBusy}>
+                          ×
+                        </button>
+                        <button
+                          type="button"
+                          className="row-edit-btn row-edit-btn--save"
+                          title="Save"
+                          disabled={isBusy}
+                          onClick={() => saveEdit(t)}
+                        >
+                          <CheckIcon size={14} color="#ffffff" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button type="button" className="row-edit-btn" title="Edit" onClick={() => startEdit(t)}>
+                        <PencilIcon size={14} />
+                      </button>
+                    ))}
                 </div>
               );
             })}

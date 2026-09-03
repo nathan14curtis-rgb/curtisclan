@@ -559,6 +559,86 @@ h2 {
   border: 1px dashed var(--faint);
 }
 
+/* ---------- Transaction flags & inline edit ---------- */
+
+.flag-dot {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border);
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.flag-dot--red { background: var(--red); border-color: var(--red); }
+.flag-dot--orange { background: #e08a3c; border-color: #e08a3c; }
+.flag-dot--yellow { background: #e0c53c; border-color: #e0c53c; }
+.flag-dot--green { background: #5fae63; border-color: #5fae63; }
+.flag-dot--blue { background: #4e8fd6; border-color: #4e8fd6; }
+.flag-dot--purple { background: #9169c9; border-color: #9169c9; }
+
+.flag-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: 0 8px 24px rgba(20, 20, 19, 0.16);
+  padding: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 20;
+}
+
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  padding: 6px 14px;
+  border-radius: var(--radius-control);
+  background: var(--surface-emphasis);
+  color: var(--ink);
+  white-space: nowrap;
+}
+.category-chip--empty {
+  color: var(--faint);
+}
+
+.row-edit-btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-control);
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+.row-edit-btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.row-edit-btn--save {
+  background: var(--teal);
+  color: #ffffff;
+  border-color: var(--teal);
+}
+.row-edit-btn--save:hover {
+  background: var(--teal);
+  opacity: 0.85;
+}
+
+.amount-edit-input {
+  width: 96px;
+  text-align: right;
+}
+
 /* ---------- Forms / controls ---------- */
 
 .field {

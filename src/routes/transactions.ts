@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { requireParam } from "../lib/http";
-import type { Env } from "../types";
+import type { Env, TransactionFlagColor } from "../types";
 import {
   applyCategorization,
   clearCategorization,
+  editTransaction,
   getTransaction,
   listTransactionsWithVerifyState,
   setTransactionExcluded,
+  setTransactionFlag,
   splitTransaction,
   unverifyTransaction,
   verifyTransaction,
@@ -67,6 +69,31 @@ transactionsRoute.post("/:transactionId/recategorize", async (c) => {
   const transactionId = requireParam(c, "transactionId");
   await categorizeTransaction(c.env, householdId, transactionId);
   const transaction = await getTransaction(c.env.DB, householdId, transactionId);
+  return c.json(transaction);
+});
+
+// The dashboard's pencil-edit flow: category and amount corrected and
+// saved together in one write, which also verifies the row.
+transactionsRoute.patch("/:transactionId/edit", async (c) => {
+  const body = await c.req.json<{ categoryId?: string; amountCents?: number; editedByUserId?: string }>();
+  if (!body.categoryId) return c.json({ error: "categoryId is required" }, 400);
+  if (typeof body.amountCents !== "number") return c.json({ error: "amountCents is required" }, 400);
+
+  const transaction = await editTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), {
+    categoryId: body.categoryId,
+    amountCents: body.amountCents,
+    editedByUserId: body.editedByUserId,
+  });
+  return c.json(transaction);
+});
+
+const FLAG_COLORS = new Set<TransactionFlagColor>(["red", "orange", "yellow", "green", "blue", "purple"]);
+
+// A purely visual marker, independent of category/verify/exclude.
+transactionsRoute.post("/:transactionId/flag", async (c) => {
+  const body = await c.req.json<{ color?: TransactionFlagColor | null }>();
+  if (body.color != null && !FLAG_COLORS.has(body.color)) return c.json({ error: "invalid flag color" }, 400);
+  const transaction = await setTransactionFlag(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), body.color ?? null);
   return c.json(transaction);
 });
 
