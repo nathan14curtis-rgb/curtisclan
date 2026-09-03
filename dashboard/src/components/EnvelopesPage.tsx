@@ -1,7 +1,6 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api, type Category, type CategorySuggestion, type Envelope, type EnvelopeMonthSummary, type Transaction } from "../api";
 import { formatCents, currentMonth } from "../format";
-import { envelopeStatus, STATUS_BADGE_CLASS } from "../envelopeStatus";
 
 interface Props {
   householdId: string;
@@ -130,13 +129,316 @@ function EnvelopeDrilldown({
   );
 }
 
+interface EnvelopeMenuAction {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  icon: string;
+}
+
+/** The row's "⋮" menu — a small click-away dropdown, no library needed for
+ * four to five actions. Closes on an outside click via a full-viewport
+ * transparent backdrop rather than a blur handler, so a click that lands on
+ * another row's menu button still opens that one instead of just closing
+ * this one and requiring a second click. */
+function EnvelopeMenu({ actions }: { actions: EnvelopeMenuAction[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: "relative", flex: "0 0 auto" }} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="envelope-menu-button"
+        aria-label="Envelope actions"
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⋮
+      </button>
+      {open && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 19 }}
+            onClick={() => setOpen(false)}
+          />
+          <div className="envelope-menu-dropdown">
+            {actions.map((a) => (
+              <button
+                key={a.label}
+                type="button"
+                className="envelope-menu-item"
+                disabled={a.disabled}
+                style={a.danger ? { color: "var(--red)" } : undefined}
+                onClick={() => {
+                  setOpen(false);
+                  a.onClick();
+                }}
+              >
+                <span aria-hidden style={{ width: 16, textAlign: "center" }}>{a.icon}</span>
+                {a.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+interface EditDraft {
+  groupName: string;
+  target: string;
+  targetDate: string;
+}
+
+/** One envelope's full row: transaction count + group tag, a bar showing
+ * this month's target alongside any rollover sitting on top of it, the
+ * available-to-spend figure, and the "⋮" menu (release rollover, edit the
+ * target, hand-adjust the rollover, rename the underlying category, or
+ * archive it). Bills and "planned"/"other" spend all render through this
+ * same row — the only difference between those sections is which envelopes
+ * get handed to it. */
+function EnvelopeRow({
+  householdId,
+  envelope,
+  category,
+  summary,
+  month,
+  categories,
+  transactions,
+  isExpanded,
+  onToggleExpand,
+  draft,
+  onStartEdit,
+  onDraftChange,
+  onSaveEdit,
+  onChanged,
+  onTransactionsChanged,
+  onArchive,
+}: {
+  householdId: string;
+  envelope: Envelope;
+  category: Category | undefined;
+  summary: EnvelopeMonthSummary | undefined;
+  month: string;
+  categories: Category[];
+  transactions: Transaction[];
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+  draft: EditDraft | undefined;
+  onStartEdit: () => void;
+  onDraftChange: (draft: EditDraft) => void;
+  onSaveEdit: () => void;
+  onChanged: () => Promise<void>;
+  onTransactionsChanged: () => Promise<void>;
+  onArchive: () => void;
+}) {
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const target = envelope.monthly_target_cents;
+  const balance = summary?.balanceCents ?? 0;
+  const spent = summary?.spentCents ?? 0;
+  const rolloverCents = target !== null ? balance - target : 0;
+  const over = balance < 0;
+
+  const txnCount = useMemo(
+    () =>
+      transactions.filter(
+        (t) => t.category_id === envelope.category_id && !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month),
+      ).length,
+    [transactions, envelope.category_id, month],
+  );
+
+  async function releaseUnspentFunds() {
+    if (rolloverCents <= 0) return;
+    setActionError(null);
+    try {
+      await api.allocateToEnvelope(householdId, envelope.id, {
+        month: currentMonth(),
+        amountCents: -rolloverCents,
+        note: "Released unspent funds",
+      });
+      await onChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to release unspent funds");
+    }
+  }
+
+  async function changeRolloverAmount() {
+    const current = (Math.max(0, rolloverCents) / 100).toFixed(2);
+    const input = window.prompt(`Set this envelope's rollover (funds beyond this month's target) to how much?`, current);
+    if (input === null) return;
+    const desiredRolloverCents = Math.round(Number(input) * 100);
+    if (!Number.isFinite(desiredRolloverCents)) return;
+    const delta = desiredRolloverCents - Math.max(0, rolloverCents);
+    if (delta === 0) return;
+    setActionError(null);
+    try {
+      await api.allocateToEnvelope(householdId, envelope.id, { month: currentMonth(), amountCents: delta, note: "Change rollover amount" });
+      await onChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to change rollover amount");
+    }
+  }
+
+  async function editExpenseSeries() {
+    if (!category) return;
+    const name = window.prompt("Rename this expense", category.name);
+    if (!name || !name.trim() || name.trim() === category.name) return;
+    setActionError(null);
+    try {
+      await api.renameCategory(householdId, category.id, name.trim());
+      await onChanged();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to rename");
+    }
+  }
+
+  const barTotal = Math.max(target ?? 0, balance, 1);
+  const targetSegPct = target ? (target / barTotal) * 100 : 0;
+  const rolloverSegPct = 100 - targetSegPct;
+  const fillPct = target ? Math.max(0, Math.min(100, (balance / target) * 100)) : 0;
+
+  return (
+    <div>
+      <div
+        className="row-item"
+        style={{ cursor: "pointer", flexWrap: "wrap", rowGap: 10 }}
+        onClick={(ev) => {
+          if ((ev.target as HTMLElement).closest("button, input, select")) return;
+          onToggleExpand();
+        }}
+      >
+        <div className="row-figure" style={{ flex: "1 1 220px", minWidth: 180 }}>
+          <span className="row-title">{category?.name ?? "Unknown category"}</span>
+          <span className="row-meta" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {txnCount} transaction{txnCount === 1 ? "" : "s"} in:
+            <span className="badge badge--soft badge--muted">{envelope.group_name}</span>
+            <span aria-hidden title="Rolls over month to month" style={{ color: "var(--faint)" }}>⟲</span>
+          </span>
+        </div>
+
+        {draft ? (
+          <div className="row" style={{ flex: "0 0 auto" }} onClick={(e) => e.stopPropagation()}>
+            <input
+              type="text"
+              placeholder="Group"
+              value={draft.groupName}
+              onChange={(e) => onDraftChange({ ...draft, groupName: e.target.value })}
+              style={{ width: 100 }}
+            />
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="Target $"
+              value={draft.target}
+              onChange={(e) => onDraftChange({ ...draft, target: e.target.value })}
+              style={{ width: 90 }}
+            />
+            {category?.kind === "savings" && (
+              <input type="date" title="Goal date" value={draft.targetDate} onChange={(e) => onDraftChange({ ...draft, targetDate: e.target.value })} />
+            )}
+            <button className="secondary" onClick={onSaveEdit}>
+              Save
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={{ flex: "2 1 220px", minWidth: 180, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontFamily: "var(--font-mono)" }}>
+                <span>
+                  Spent <strong>{formatCents(spent)}</strong>
+                </span>
+                <span style={{ display: "flex", gap: 8 }}>
+                  {target !== null && (
+                    <span>
+                      of <strong>{formatCents(target)}</strong>
+                    </span>
+                  )}
+                  {rolloverCents > 0 && <span style={{ color: "var(--teal)" }}>+{formatCents(rolloverCents)}</span>}
+                </span>
+              </div>
+              {over ? (
+                <div className="envelope-bar">
+                  <div className="envelope-bar-target-fill over" style={{ width: "100%" }} />
+                </div>
+              ) : target !== null ? (
+                <div className="envelope-bar">
+                  <div className="envelope-bar-target" style={{ width: `${targetSegPct}%` }}>
+                    <div className="envelope-bar-target-fill" style={{ width: `${fillPct}%` }} />
+                  </div>
+                  {rolloverSegPct > 0 && <div className="envelope-bar-rollover" style={{ width: `${rolloverSegPct}%` }} />}
+                </div>
+              ) : (
+                <div className="envelope-bar">
+                  {balance > 0 && <div className="envelope-bar-rollover" style={{ width: "100%" }} />}
+                </div>
+              )}
+            </div>
+
+            <div style={{ flex: "0 0 auto", textAlign: "right", minWidth: 130 }}>
+              <div className={`money ${over ? "negative" : "positive"}`} style={{ fontSize: 18, fontWeight: 600 }}>
+                {formatCents(balance)}
+              </div>
+              <div className="hint" style={{ margin: 0 }}>
+                {over ? "Over budget" : rolloverCents > 0 ? "Available with rollover" : "Available to spend"}
+              </div>
+            </div>
+
+            <EnvelopeMenu
+              actions={[
+                {
+                  label: "Release unspent funds",
+                  icon: "↩",
+                  disabled: rolloverCents <= 0,
+                  onClick: releaseUnspentFunds,
+                },
+                { label: "Edit this month's expense", icon: "🗓", onClick: onStartEdit },
+                { label: "Change rollover amount", icon: "⇄", onClick: changeRolloverAmount },
+                { label: "Edit expense series", icon: "✎", onClick: editExpenseSeries },
+                { label: "Archive", icon: "🗄", danger: true, onClick: onArchive },
+              ]}
+            />
+          </>
+        )}
+      </div>
+      {actionError && (
+        <div className="row-item">
+          <p className="error" style={{ margin: 0 }}>{actionError}</p>
+        </div>
+      )}
+      {isExpanded && (
+        <EnvelopeDrilldown
+          householdId={householdId}
+          envelope={envelope}
+          category={category}
+          categories={categories}
+          transactions={transactions}
+          onTransactionsChanged={onTransactionsChanged}
+          onBalanceAdjusted={onChanged}
+        />
+      )}
+    </div>
+  );
+}
+
 export function EnvelopesPage({ householdId, categories, envelopes, envelopeSummaries, transactions, onChanged, onTransactionsChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newKind, setNewKind] = useState<"expense" | "savings">("expense");
   const [newGroup, setNewGroup] = useState("");
   const [newTarget, setNewTarget] = useState("");
-  const [editing, setEditing] = useState<Record<string, { groupName: string; target: string; targetDate: string }>>({});
+  const [editing, setEditing] = useState<Record<string, EditDraft>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<CategorySuggestion[] | null>(null);
   const [suggestChecked, setSuggestChecked] = useState<Record<number, boolean>>({});
@@ -145,46 +447,52 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const [rebuilding, setRebuilding] = useState(false);
 
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
-  // Bills live on the Recurring page now — this page ("Spending Plan") is
-  // everything else, so an envelope's target doesn't get double-counted
-  // between the two pages' "allocated" figures.
-  const visible = useMemo(() => envelopes.filter((e) => !e.archived_at && e.group_name.toLowerCase() !== "bills"), [envelopes]);
+  const month = currentMonth();
+
+  // Every non-transfer envelope, split three ways for the page's required
+  // order (income, then bills, then planned spend, then other spend):
+  // Bills already live in their own group_name; "planned" is any envelope
+  // with a monthly target set, "other" is everything left (ad hoc spend
+  // with no target to plan against yet).
   const bills = useMemo(() => envelopes.filter((e) => !e.archived_at && e.group_name.toLowerCase() === "bills"), [envelopes]);
+  const nonBills = useMemo(() => envelopes.filter((e) => !e.archived_at && e.group_name.toLowerCase() !== "bills"), [envelopes]);
+  const plannedEnvelopes = useMemo(() => nonBills.filter((e) => e.monthly_target_cents !== null), [nonBills]);
+  const otherEnvelopes = useMemo(() => nonBills.filter((e) => e.monthly_target_cents === null), [nonBills]);
+
+  const incomeCategories = useMemo(() => categories.filter((c) => c.kind === "income" && !c.archived_at), [categories]);
+  const incomeRows = useMemo(
+    () =>
+      incomeCategories.map((c) => {
+        const txns = transactions.filter((t) => t.category_id === c.id && !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month));
+        return { category: c, totalCents: txns.reduce((sum, t) => sum + t.amount_cents, 0), count: txns.length };
+      }),
+    [incomeCategories, transactions, month],
+  );
+  const incomeThisMonthCents = useMemo(() => incomeRows.reduce((sum, r) => sum + r.totalCents, 0), [incomeRows]);
 
   const allocatedForSpendCents = useMemo(
-    () => visible.filter((e) => categoryById.get(e.category_id)?.kind === "expense").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
-    [visible, categoryById],
+    () => plannedEnvelopes.filter((e) => categoryById.get(e.category_id)?.kind === "expense").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
+    [plannedEnvelopes, categoryById],
   );
   const allocatedForGoalsCents = useMemo(
-    () => visible.filter((e) => categoryById.get(e.category_id)?.kind === "savings").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
-    [visible, categoryById],
+    () => plannedEnvelopes.filter((e) => categoryById.get(e.category_id)?.kind === "savings").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
+    [plannedEnvelopes, categoryById],
   );
   const billsCommittedCents = useMemo(() => bills.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [bills]);
   const allocatedCents = allocatedForSpendCents + allocatedForGoalsCents;
-
-  // What's actually available to plan with: recurring/actual income this
-  // month, minus what bills already claim, minus what's already allocated
-  // here — not a bank-balance figure (that lives in the sidebar's "safe to
-  // spend"), just "how much of my income has nowhere assigned yet."
-  const month = currentMonth();
-  const incomeThisMonthCents = useMemo(
-    () =>
-      transactions
-        .filter((t) => !t.is_transfer && !t.excluded_from_budget && t.category_id && categoryById.get(t.category_id)?.kind === "income" && t.posted_at.startsWith(month))
-        .reduce((sum, t) => sum + t.amount_cents, 0),
-    [transactions, categoryById, month],
-  );
   const unallocatedCents = incomeThisMonthCents - billsCommittedCents - allocatedCents;
 
-  const grouped = useMemo(() => {
+  function groupByName(list: Envelope[]) {
     const byGroup = new Map<string, Envelope[]>();
-    for (const e of visible) {
-      const list = byGroup.get(e.group_name) ?? [];
-      list.push(e);
-      byGroup.set(e.group_name, list);
+    for (const e of list) {
+      const g = byGroup.get(e.group_name) ?? [];
+      g.push(e);
+      byGroup.set(e.group_name, g);
     }
     return [...byGroup.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [visible]);
+  }
+  const groupedPlanned = useMemo(() => groupByName(plannedEnvelopes), [plannedEnvelopes]);
+  const groupedOther = useMemo(() => groupByName(otherEnvelopes), [otherEnvelopes]);
 
   function startEdit(e: Envelope) {
     setEditing((prev) => ({
@@ -262,10 +570,7 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   async function rebuildFromSuggestions() {
     if (!suggestions) return;
     const toCreate = suggestions.filter((_, i) => suggestChecked[i]);
-    // visible already excludes Bills-grouped envelopes and archived ones —
-    // its category ids are exactly "this page's" categories, the ones a
-    // rebuild should replace.
-    const visibleCategoryIds = new Set(visible.map((e) => e.category_id));
+    const visibleCategoryIds = new Set(nonBills.map((e) => e.category_id));
     const toArchive = categories.filter((c) => visibleCategoryIds.has(c.id));
     if (
       !window.confirm(
@@ -297,6 +602,37 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
     }
   }
 
+  function renderEnvelopeGroups(groups: [string, Envelope[]][]) {
+    return groups.map(([groupName, groupEnvelopes]) => (
+      <div key={groupName} className="section" style={{ gap: 12 }}>
+        <p className="envelope-group-heading">{groupName}</p>
+        <div className="row-list">
+          {groupEnvelopes.map((envelope) => (
+            <EnvelopeRow
+              key={envelope.id}
+              householdId={householdId}
+              envelope={envelope}
+              category={categoryById.get(envelope.category_id)}
+              summary={envelopeSummaries[envelope.id]}
+              month={month}
+              categories={categories}
+              transactions={transactions}
+              isExpanded={expandedId === envelope.id}
+              onToggleExpand={() => setExpandedId(expandedId === envelope.id ? null : envelope.id)}
+              draft={editing[envelope.id]}
+              onStartEdit={() => startEdit(envelope)}
+              onDraftChange={(draft) => setEditing((prev) => ({ ...prev, [envelope.id]: draft }))}
+              onSaveEdit={() => saveEdit(envelope.id)}
+              onChanged={onChanged}
+              onTransactionsChanged={onTransactionsChanged}
+              onArchive={() => archive(envelope.category_id)}
+            />
+          ))}
+        </div>
+      </div>
+    ));
+  }
+
   return (
     <div className="section">
       <div className="grid-3">
@@ -317,106 +653,65 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
         </div>
       </div>
 
-      {grouped.map(([groupName, groupEnvelopes]) => (
-        <div key={groupName} className="section" style={{ gap: 12 }}>
-          <p className="envelope-group-heading">{groupName}</p>
+      {/* Income, then Bills, then Planned spend, then Other spend. */}
+      <div className="section" style={{ gap: 12 }}>
+        <p className="envelope-group-heading">Income</p>
+        <div className="row-list">
+          {incomeRows.map(({ category, totalCents, count }) => (
+            <div className="row-item" key={category.id}>
+              <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                <span className="row-title">{category.name}</span>
+                <span className="row-meta">
+                  {count} transaction{count === 1 ? "" : "s"} this month
+                </span>
+              </div>
+              <span className="money positive" style={{ fontSize: 18, fontWeight: 600 }}>
+                {formatCents(totalCents)}
+              </span>
+            </div>
+          ))}
+          {incomeRows.length === 0 && (
+            <div className="row-item">
+              <span className="hint">No income categories yet.</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {bills.length > 0 && (
+        <div className="section" style={{ gap: 12 }}>
+          <p className="envelope-group-heading">Bills</p>
           <div className="row-list">
-            {groupEnvelopes.map((envelope, i) => {
-              const category = categoryById.get(envelope.category_id);
-              const summary = envelopeSummaries[envelope.id];
-              const draft = editing[envelope.id];
-              const status = envelopeStatus(envelope, summary);
-              const pct = envelope.monthly_target_cents && summary ? Math.min(100, Math.max(0, (summary.spentCents / envelope.monthly_target_cents) * 100)) : null;
-              const isExpanded = expandedId === envelope.id;
-              return (
-                <div key={envelope.id}>
-                <div
-                  className="row-item"
-                  style={{ ...(i ? {} : {}), cursor: "pointer" }}
-                  onClick={(ev) => {
-                    // Editing/archiving controls handle their own clicks —
-                    // only bare row space toggles the drill-down.
-                    if ((ev.target as HTMLElement).closest("button, input, select")) return;
-                    setExpandedId(isExpanded ? null : envelope.id);
-                  }}
-                >
-                  <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                    <span className="row-title">{category?.name ?? "Unknown category"}</span>
-                    {envelope.monthly_target_cents !== null && summary && (
-                      <span className="row-meta">
-                        {formatCents(summary.spentCents)} of {formatCents(envelope.monthly_target_cents)} spent
-                      </span>
-                    )}
-                  </div>
-                  <span className={STATUS_BADGE_CLASS[status]}>{status}</span>
-                  {summary && <span className={`money ${summary.balanceCents < 0 ? "negative" : "positive"}`}>{formatCents(summary.balanceCents)} left</span>}
-                  {pct !== null && (
-                    <div style={{ width: 96, flex: "0 0 auto" }}>
-                      <div className="progress-track">
-                        <div className={`progress-fill ${pct >= 100 ? "over" : ""}`} style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  )}
-                  {draft ? (
-                    <div className="row" style={{ flex: "0 0 auto" }}>
-                      <input
-                        type="text"
-                        placeholder="Group"
-                        value={draft.groupName}
-                        onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, groupName: e.target.value } }))}
-                        style={{ width: 100 }}
-                      />
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        placeholder="Target $"
-                        value={draft.target}
-                        onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, target: e.target.value } }))}
-                        style={{ width: 90 }}
-                      />
-                      {category?.kind === "savings" && (
-                        <input
-                          type="date"
-                          title="Goal date"
-                          value={draft.targetDate}
-                          onChange={(e) => setEditing((prev) => ({ ...prev, [envelope.id]: { ...draft, targetDate: e.target.value } }))}
-                        />
-                      )}
-                      <button className="secondary" onClick={() => saveEdit(envelope.id)}>
-                        Save
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="row" style={{ flex: "0 0 auto" }}>
-                      <button className="secondary" onClick={() => startEdit(envelope)}>
-                        Edit
-                      </button>
-                      {category && (
-                        <button className="danger" onClick={() => archive(category.id)}>
-                          Archive
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {isExpanded && (
-                  <EnvelopeDrilldown
-                    householdId={householdId}
-                    envelope={envelope}
-                    category={category}
-                    categories={categories}
-                    transactions={transactions}
-                    onTransactionsChanged={onTransactionsChanged}
-                    onBalanceAdjusted={onChanged}
-                  />
-                )}
-                </div>
-              );
-            })}
+            {bills.map((envelope) => (
+              <EnvelopeRow
+                key={envelope.id}
+                householdId={householdId}
+                envelope={envelope}
+                category={categoryById.get(envelope.category_id)}
+                summary={envelopeSummaries[envelope.id]}
+                month={month}
+                categories={categories}
+                transactions={transactions}
+                isExpanded={expandedId === envelope.id}
+                onToggleExpand={() => setExpandedId(expandedId === envelope.id ? null : envelope.id)}
+                draft={editing[envelope.id]}
+                onStartEdit={() => startEdit(envelope)}
+                onDraftChange={(draft) => setEditing((prev) => ({ ...prev, [envelope.id]: draft }))}
+                onSaveEdit={() => saveEdit(envelope.id)}
+                onChanged={onChanged}
+                onTransactionsChanged={onTransactionsChanged}
+                onArchive={() => archive(envelope.category_id)}
+              />
+            ))}
           </div>
         </div>
-      ))}
-      {visible.length === 0 && <p className="hint">Nothing here yet — add one below.</p>}
+      )}
+
+      <p className="envelope-group-heading" style={{ marginTop: "1.5rem" }}>Planned spend</p>
+      {groupedPlanned.length > 0 ? renderEnvelopeGroups(groupedPlanned) : <p className="hint">Set a monthly target on an envelope to see it here.</p>}
+
+      <p className="envelope-group-heading" style={{ marginTop: "1.5rem" }}>Other spend</p>
+      {groupedOther.length > 0 ? renderEnvelopeGroups(groupedOther) : <p className="hint">Nothing untargeted right now.</p>}
 
       <section className="card card--padded">
         <div className="row" style={{ justifyContent: "space-between" }}>
