@@ -195,6 +195,252 @@ function EnvelopeMenu({ actions }: { actions: EnvelopeMenuAction[] }) {
   );
 }
 
+/**
+ * The "Add" button on each Spending Plan summary tab — picks a past
+ * transaction and turns it into a confirmed recurring pattern (same write
+ * path as the Recurring page's "Add recurring" wizard), so a bill or
+ * income deposit someone already has starts auto-matching going forward
+ * without a trip to the Recurring page.
+ */
+function RecurringTransactionPicker({
+  householdId,
+  kind,
+  categories,
+  transactions,
+  onDone,
+  onCancel,
+}: {
+  householdId: string;
+  kind: "expense" | "income";
+  categories: Category[];
+  transactions: Transaction[];
+  onDone: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [picked, setPicked] = useState<Transaction | null>(null);
+  const [merchantPattern, setMerchantPattern] = useState("");
+  const [dayOfMonth, setDayOfMonth] = useState("");
+  const [categoryMode, setCategoryMode] = useState<"existing" | "new">("new");
+  const [categoryId, setCategoryId] = useState("");
+  const [newName, setNewName] = useState("");
+  const [monthlyTarget, setMonthlyTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const matchingCategories = useMemo(() => categories.filter((c) => !c.archived_at && c.kind === kind), [categories, kind]);
+
+  const candidates = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const seen = new Set<string>();
+    const results: Transaction[] = [];
+    for (const t of transactions) {
+      if (t.is_transfer) continue;
+      if (kind === "income" ? t.amount_cents <= 0 : t.amount_cents >= 0) continue;
+      const merchant = t.normalized_merchant ?? t.raw_description;
+      if (needle && !merchant.toLowerCase().includes(needle)) continue;
+      if (seen.has(merchant)) continue;
+      seen.add(merchant);
+      results.push(t);
+      if (results.length >= 8) break;
+    }
+    return results;
+  }, [search, kind, transactions]);
+
+  function pick(t: Transaction) {
+    setPicked(t);
+    setMerchantPattern(t.normalized_merchant ?? t.raw_description);
+    setDayOfMonth(String(Number(t.posted_at.slice(8, 10))));
+    if (t.category_id) {
+      setCategoryMode("existing");
+      setCategoryId(t.category_id);
+    }
+  }
+
+  async function submit() {
+    if (!merchantPattern.trim() || !dayOfMonth) return;
+    if (categoryMode === "existing" && !categoryId) return;
+    if (categoryMode === "new" && !newName.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.createRecurringPattern(householdId, {
+        merchantPattern: merchantPattern.trim(),
+        kind,
+        dayOfMonth: Number(dayOfMonth),
+        categoryId: categoryMode === "existing" ? categoryId : undefined,
+        newCategoryName: categoryMode === "new" ? newName.trim() : undefined,
+        monthlyTargetCents: kind === "expense" && monthlyTarget.trim() ? Math.round(Number(monthlyTarget) * 100) : undefined,
+      });
+      await onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add recurring");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card card--padded" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <h3 style={{ margin: 0 }}>Choose a previous transaction to be made recurring</h3>
+        <button type="button" className="secondary" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+
+      {!picked ? (
+        <div className="section" style={{ gap: 12 }}>
+          <input type="text" placeholder="Search transactions…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <div className="row-list">
+            {candidates.map((t) => (
+              <div className="row-item" key={t.id} style={{ cursor: "pointer" }} onClick={() => pick(t)}>
+                <div className="row-figure" style={{ flex: "1 1 auto" }}>
+                  <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
+                  <span className="row-meta">{t.posted_at}</span>
+                </div>
+                <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
+                  {formatCents(t.amount_cents)}
+                </span>
+              </div>
+            ))}
+            {candidates.length === 0 && (
+              <div className="row-item">
+                <span className="hint">No matching transactions yet.</span>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="section" style={{ gap: 12 }}>
+          <div className="row-item" style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-control)" }}>
+            <div className="row-figure" style={{ flex: "1 1 auto" }}>
+              <span className="row-title">{picked.normalized_merchant ?? picked.raw_description}</span>
+              <span className="row-meta">{picked.posted_at}</span>
+            </div>
+            <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
+              {formatCents(picked.amount_cents)}
+            </span>
+            <button type="button" className="secondary" onClick={() => setPicked(null)}>
+              Change
+            </button>
+          </div>
+          <div className="row">
+            <div className="field" style={{ flex: 1 }}>
+              <label htmlFor="rtp-merchant">Merchant pattern</label>
+              <input id="rtp-merchant" type="text" value={merchantPattern} onChange={(e) => setMerchantPattern(e.target.value)} />
+            </div>
+            <div className="field">
+              <label htmlFor="rtp-day">Day of month</label>
+              <input
+                id="rtp-day"
+                type="number"
+                min={1}
+                max={31}
+                value={dayOfMonth}
+                onChange={(e) => setDayOfMonth(e.target.value)}
+                style={{ width: 90 }}
+              />
+            </div>
+          </div>
+          <div className="row">
+            <select value={categoryMode} onChange={(e) => setCategoryMode(e.target.value as "existing" | "new")}>
+              <option value="new">New category</option>
+              <option value="existing">Existing category</option>
+            </select>
+            {categoryMode === "existing" ? (
+              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} required>
+                <option value="" disabled>
+                  Choose…
+                </option>
+                {matchingCategories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input type="text" placeholder="Category name" value={newName} onChange={(e) => setNewName(e.target.value)} style={{ flex: 1 }} />
+            )}
+            {kind === "expense" && (
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="Monthly amount $ (optional)"
+                value={monthlyTarget}
+                onChange={(e) => setMonthlyTarget(e.target.value)}
+                style={{ width: 200 }}
+              />
+            )}
+          </div>
+          <div className="row">
+            <button type="button" onClick={submit} disabled={busy}>
+              {busy ? "Adding…" : "Add recurring"}
+            </button>
+          </div>
+          {error && <p className="error">{error}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A Spending Plan section collapsed to one summary row — name, item
+ * count, this month's total, and an "Add" button — that expands in place
+ * to the full breakdown on click. Keeps Income/Bills/Planned/Other spend
+ * scannable at a glance without losing the detail underneath. */
+function SummaryTab({
+  title,
+  itemCountLabel,
+  totalCents,
+  isExpanded,
+  onToggle,
+  onAdd,
+  children,
+}: {
+  title: string;
+  itemCountLabel: string;
+  totalCents: number;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onAdd: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="section" style={{ gap: 12 }}>
+      <div className="card card--padded row" style={{ justifyContent: "space-between", cursor: "pointer" }} onClick={onToggle}>
+        <div className="row" style={{ gap: 12 }}>
+          <span className={`nav-caret ${isExpanded ? "is-open" : ""}`} aria-hidden>
+            ›
+          </span>
+          <div>
+            <div style={{ fontFamily: "var(--font-display)", fontSize: 22, color: "var(--ink)" }}>{title}</div>
+            <p className="hint" style={{ margin: 0 }}>
+              {itemCountLabel}
+            </p>
+          </div>
+        </div>
+        <div className="row" style={{ gap: 16 }}>
+          <span className="money" style={{ fontSize: 18, fontWeight: 600 }}>
+            {formatCents(totalCents)}
+          </span>
+          <button
+            type="button"
+            className="secondary"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdd();
+            }}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+      {isExpanded && <div className="section" style={{ gap: 12 }}>{children}</div>}
+    </div>
+  );
+}
+
 interface EditDraft {
   groupName: string;
   target: string;
@@ -440,6 +686,8 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const [newTarget, setNewTarget] = useState("");
   const [editing, setEditing] = useState<Record<string, EditDraft>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedTab, setExpandedTab] = useState<"income" | "bills" | "planned" | "other" | null>(null);
+  const [addingTab, setAddingTab] = useState<"income" | "bills" | "planned" | "other" | null>(null);
   const [suggestions, setSuggestions] = useState<CategorySuggestion[] | null>(null);
   const [suggestChecked, setSuggestChecked] = useState<Record<number, boolean>>({});
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -459,16 +707,19 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const plannedEnvelopes = useMemo(() => nonBills.filter((e) => e.monthly_target_cents !== null), [nonBills]);
   const otherEnvelopes = useMemo(() => nonBills.filter((e) => e.monthly_target_cents === null), [nonBills]);
 
-  const incomeCategories = useMemo(() => categories.filter((c) => c.kind === "income" && !c.archived_at), [categories]);
-  const incomeRows = useMemo(
+  // Flat transactions, not grouped by income category ("Paycheck" vs.
+  // "Other Income") — the summary tab just says "Income" and the
+  // breakdown is every deposit that landed there this month.
+  const incomeTransactions = useMemo(
     () =>
-      incomeCategories.map((c) => {
-        const txns = transactions.filter((t) => t.category_id === c.id && !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month));
-        return { category: c, totalCents: txns.reduce((sum, t) => sum + t.amount_cents, 0), count: txns.length };
-      }),
-    [incomeCategories, transactions, month],
+      transactions
+        .filter(
+          (t) => !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month) && categoryById.get(t.category_id ?? "")?.kind === "income",
+        )
+        .sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1)),
+    [transactions, categoryById, month],
   );
-  const incomeThisMonthCents = useMemo(() => incomeRows.reduce((sum, r) => sum + r.totalCents, 0), [incomeRows]);
+  const incomeThisMonthCents = useMemo(() => incomeTransactions.reduce((sum, t) => sum + t.amount_cents, 0), [incomeTransactions]);
 
   const allocatedForSpendCents = useMemo(
     () => plannedEnvelopes.filter((e) => categoryById.get(e.category_id)?.kind === "expense").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
@@ -481,6 +732,10 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
   const billsCommittedCents = useMemo(() => bills.reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0), [bills]);
   const allocatedCents = allocatedForSpendCents + allocatedForGoalsCents;
   const unallocatedCents = incomeThisMonthCents - billsCommittedCents - allocatedCents;
+  const otherSpendCents = useMemo(
+    () => otherEnvelopes.reduce((sum, e) => sum + (envelopeSummaries[e.id]?.spentCents ?? 0), 0),
+    [otherEnvelopes, envelopeSummaries],
+  );
 
   function groupByName(list: Envelope[]) {
     const byGroup = new Map<string, Envelope[]>();
@@ -653,65 +908,147 @@ export function EnvelopesPage({ householdId, categories, envelopes, envelopeSumm
         </div>
       </div>
 
-      {/* Income, then Bills, then Planned spend, then Other spend. */}
-      <div className="section" style={{ gap: 12 }}>
-        <p className="envelope-group-heading">Income</p>
+      {/* Income, then Bills, then Planned spend, then Other spend — each
+          collapsed to one summary row until expanded. */}
+      <SummaryTab
+        title="Income"
+        itemCountLabel={`${incomeTransactions.length} transaction${incomeTransactions.length === 1 ? "" : "s"} this month`}
+        totalCents={incomeThisMonthCents}
+        isExpanded={expandedTab === "income"}
+        onToggle={() => setExpandedTab((t) => (t === "income" ? null : "income"))}
+        onAdd={() => setAddingTab((t) => (t === "income" ? null : "income"))}
+      >
+        {addingTab === "income" && (
+          <RecurringTransactionPicker
+            householdId={householdId}
+            kind="income"
+            categories={categories}
+            transactions={transactions}
+            onCancel={() => setAddingTab(null)}
+            onDone={async () => {
+              setAddingTab(null);
+              await onChanged();
+            }}
+          />
+        )}
         <div className="row-list">
-          {incomeRows.map(({ category, totalCents, count }) => (
-            <div className="row-item" key={category.id}>
+          {incomeTransactions.map((t) => (
+            <div className="row-item" key={t.id}>
               <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                <span className="row-title">{category.name}</span>
-                <span className="row-meta">
-                  {count} transaction{count === 1 ? "" : "s"} this month
-                </span>
+                <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
+                <span className="row-meta">{t.posted_at}</span>
               </div>
-              <span className="money positive" style={{ fontSize: 18, fontWeight: 600 }}>
-                {formatCents(totalCents)}
+              <span className="money positive" style={{ minWidth: 96, textAlign: "right" }}>
+                {formatCents(t.amount_cents)}
               </span>
             </div>
           ))}
-          {incomeRows.length === 0 && (
+          {incomeTransactions.length === 0 && (
             <div className="row-item">
-              <span className="hint">No income categories yet.</span>
+              <span className="hint">No income this month yet.</span>
             </div>
           )}
         </div>
-      </div>
+      </SummaryTab>
 
-      {bills.length > 0 && (
-        <div className="section" style={{ gap: 12 }}>
-          <p className="envelope-group-heading">Bills</p>
-          <div className="row-list">
-            {bills.map((envelope) => (
-              <EnvelopeRow
-                key={envelope.id}
-                householdId={householdId}
-                envelope={envelope}
-                category={categoryById.get(envelope.category_id)}
-                summary={envelopeSummaries[envelope.id]}
-                month={month}
-                categories={categories}
-                transactions={transactions}
-                isExpanded={expandedId === envelope.id}
-                onToggleExpand={() => setExpandedId(expandedId === envelope.id ? null : envelope.id)}
-                draft={editing[envelope.id]}
-                onStartEdit={() => startEdit(envelope)}
-                onDraftChange={(draft) => setEditing((prev) => ({ ...prev, [envelope.id]: draft }))}
-                onSaveEdit={() => saveEdit(envelope.id)}
-                onChanged={onChanged}
-                onTransactionsChanged={onTransactionsChanged}
-                onArchive={() => archive(envelope.category_id)}
-              />
-            ))}
-          </div>
+      <SummaryTab
+        title="Bills"
+        itemCountLabel={`${bills.length} bill${bills.length === 1 ? "" : "s"} · ${formatCents(billsCommittedCents)} budgeted/mo`}
+        totalCents={billsCommittedCents}
+        isExpanded={expandedTab === "bills"}
+        onToggle={() => setExpandedTab((t) => (t === "bills" ? null : "bills"))}
+        onAdd={() => setAddingTab((t) => (t === "bills" ? null : "bills"))}
+      >
+        {addingTab === "bills" && (
+          <RecurringTransactionPicker
+            householdId={householdId}
+            kind="expense"
+            categories={categories}
+            transactions={transactions}
+            onCancel={() => setAddingTab(null)}
+            onDone={async () => {
+              setAddingTab(null);
+              await onChanged();
+            }}
+          />
+        )}
+        <div className="row-list">
+          {bills.map((envelope) => (
+            <EnvelopeRow
+              key={envelope.id}
+              householdId={householdId}
+              envelope={envelope}
+              category={categoryById.get(envelope.category_id)}
+              summary={envelopeSummaries[envelope.id]}
+              month={month}
+              categories={categories}
+              transactions={transactions}
+              isExpanded={expandedId === envelope.id}
+              onToggleExpand={() => setExpandedId(expandedId === envelope.id ? null : envelope.id)}
+              draft={editing[envelope.id]}
+              onStartEdit={() => startEdit(envelope)}
+              onDraftChange={(draft) => setEditing((prev) => ({ ...prev, [envelope.id]: draft }))}
+              onSaveEdit={() => saveEdit(envelope.id)}
+              onChanged={onChanged}
+              onTransactionsChanged={onTransactionsChanged}
+              onArchive={() => archive(envelope.category_id)}
+            />
+          ))}
+          {bills.length === 0 && (
+            <div className="row-item">
+              <span className="hint">No bills yet.</span>
+            </div>
+          )}
         </div>
-      )}
+      </SummaryTab>
 
-      <p className="envelope-group-heading" style={{ marginTop: "1.5rem" }}>Planned spend</p>
-      {groupedPlanned.length > 0 ? renderEnvelopeGroups(groupedPlanned) : <p className="hint">Set a monthly target on an envelope to see it here.</p>}
+      <SummaryTab
+        title="Planned spend"
+        itemCountLabel={`${plannedEnvelopes.length} envelope${plannedEnvelopes.length === 1 ? "" : "s"}`}
+        totalCents={allocatedForSpendCents + allocatedForGoalsCents}
+        isExpanded={expandedTab === "planned"}
+        onToggle={() => setExpandedTab((t) => (t === "planned" ? null : "planned"))}
+        onAdd={() => setAddingTab((t) => (t === "planned" ? null : "planned"))}
+      >
+        {addingTab === "planned" && (
+          <RecurringTransactionPicker
+            householdId={householdId}
+            kind="expense"
+            categories={categories}
+            transactions={transactions}
+            onCancel={() => setAddingTab(null)}
+            onDone={async () => {
+              setAddingTab(null);
+              await onChanged();
+            }}
+          />
+        )}
+        {groupedPlanned.length > 0 ? renderEnvelopeGroups(groupedPlanned) : <p className="hint">Set a monthly target on an envelope to see it here.</p>}
+      </SummaryTab>
 
-      <p className="envelope-group-heading" style={{ marginTop: "1.5rem" }}>Other spend</p>
-      {groupedOther.length > 0 ? renderEnvelopeGroups(groupedOther) : <p className="hint">Nothing untargeted right now.</p>}
+      <SummaryTab
+        title="Other spend"
+        itemCountLabel={`${otherEnvelopes.length} envelope${otherEnvelopes.length === 1 ? "" : "s"}`}
+        totalCents={otherSpendCents}
+        isExpanded={expandedTab === "other"}
+        onToggle={() => setExpandedTab((t) => (t === "other" ? null : "other"))}
+        onAdd={() => setAddingTab((t) => (t === "other" ? null : "other"))}
+      >
+        {addingTab === "other" && (
+          <RecurringTransactionPicker
+            householdId={householdId}
+            kind="expense"
+            categories={categories}
+            transactions={transactions}
+            onCancel={() => setAddingTab(null)}
+            onDone={async () => {
+              setAddingTab(null);
+              await onChanged();
+            }}
+          />
+        )}
+        {groupedOther.length > 0 ? renderEnvelopeGroups(groupedOther) : <p className="hint">Nothing untargeted right now.</p>}
+      </SummaryTab>
 
       <section className="card card--padded">
         <div className="row" style={{ justifyContent: "space-between" }}>

@@ -59,10 +59,12 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const [draftCategoryId, setDraftCategoryId] = useState("");
   const [draftAmount, setDraftAmount] = useState("");
   const [draftExcluded, setDraftExcluded] = useState(false);
   const [flagMenuId, setFlagMenuId] = useState<string | null>(null);
+  const [flagMenuPos, setFlagMenuPos] = useState<{ top: number; left: number } | null>(null);
 
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
@@ -141,6 +143,7 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
 
   function startEdit(t: Transaction) {
     setEditingId(t.id);
+    setEditError(null);
     setDraftCategoryId(t.category_id ?? "");
     setDraftAmount((t.amount_cents / 100).toFixed(2));
     setDraftExcluded(Boolean(t.excluded_from_budget));
@@ -148,14 +151,20 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
 
   function cancelEdit() {
     setEditingId(null);
+    setEditError(null);
   }
 
   async function saveEdit(t: Transaction) {
     const cents = Math.round(parseFloat(draftAmount) * 100);
-    if (!draftCategoryId || Number.isNaN(cents)) {
-      setError("Enter a category and a valid amount");
+    if (!draftCategoryId) {
+      setEditError("Pick a category first");
       return;
     }
+    if (Number.isNaN(cents)) {
+      setEditError("Enter a valid amount");
+      return;
+    }
+    setEditError(null);
     setBusyId(t.id);
     setError(null);
     try {
@@ -167,13 +176,31 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
       if (draftExcluded !== Boolean(t.excluded_from_budget)) {
         await api.setTransactionExcluded(householdId, t.id, draftExcluded);
       }
-      await onChanged();
-      setEditingId(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
       setBusyId(null);
+      setEditError(err instanceof Error ? err.message : "Failed to save");
+      return;
     }
+    // The save itself succeeded — leave edit mode now rather than waiting
+    // on the list refresh below, so a slow or failed refresh never leaves
+    // the row looking like the save silently did nothing.
+    setEditingId(null);
+    setBusyId(null);
+    try {
+      await onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Saved, but the list failed to refresh — reload to see it.");
+    }
+  }
+
+  function openFlagMenu(transactionId: string, anchor: HTMLElement) {
+    if (flagMenuId === transactionId) {
+      setFlagMenuId(null);
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    setFlagMenuPos({ top: rect.bottom + 4, left: rect.left });
+    setFlagMenuId(transactionId);
   }
 
   async function setFlag(transactionId: string, color: TransactionFlagColor | null) {
@@ -358,19 +385,19 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
               const isEditing = editingId === t.id;
               const isBusy = busyId === t.id;
               return (
-                <div className="row-item" key={t.id}>
+                <div className={`row-item ${Boolean(t.excluded_from_budget) ? "row-item--excluded" : ""}`} key={t.id}>
                   <div style={{ position: "relative", flex: "0 0 auto" }}>
                     <button
                       type="button"
                       className={`flag-dot ${t.flag_color ? `flag-dot--${t.flag_color}` : ""}`}
                       title={t.flag_color ? `Flagged ${t.flag_color}` : "Flag this transaction"}
                       disabled={isBusy}
-                      onClick={() => setFlagMenuId((id) => (id === t.id ? null : t.id))}
+                      onClick={(e) => openFlagMenu(t.id, e.currentTarget)}
                     />
-                    {flagMenuId === t.id && (
+                    {flagMenuId === t.id && flagMenuPos && (
                       <>
                         <div style={{ position: "fixed", inset: 0, zIndex: 19 }} onClick={() => setFlagMenuId(null)} />
-                        <div className="flag-menu">
+                        <div className="flag-menu" style={{ top: flagMenuPos.top, left: flagMenuPos.left }}>
                           {FLAG_COLORS.map((color) => (
                             <button
                               key={color}
@@ -395,7 +422,15 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
                   {t.is_transfer ? (
                     <span className="badge">transfer</span>
                   ) : isEditing ? (
-                    <select value={draftCategoryId} disabled={isBusy} onChange={(e) => setDraftCategoryId(e.target.value)}>
+                    <select
+                      value={draftCategoryId}
+                      disabled={isBusy}
+                      className={!draftCategoryId && editError ? "field-invalid" : ""}
+                      onChange={(e) => {
+                        setDraftCategoryId(e.target.value);
+                        setEditError(null);
+                      }}
+                    >
                       <option value="" disabled>
                         Needs review
                       </option>
@@ -428,6 +463,7 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
                   {!t.is_transfer &&
                     (isEditing ? (
                       <div className="row" style={{ gap: 8, flex: "0 0 auto" }}>
+                        {editError && <span className="inline-error">{editError}</span>}
                         <label className="row" style={{ gap: 4, fontSize: 12 }} title="Exclude from budget">
                           <input
                             type="checkbox"

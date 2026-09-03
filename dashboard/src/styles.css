@@ -504,6 +504,13 @@ h2 {
 .row-item:hover {
   background: var(--hover);
 }
+.row-item--excluded {
+  opacity: 0.55;
+}
+.row-item--excluded .row-title,
+.row-item--excluded .money {
+  color: var(--muted) !important;
+}
 .row-avatar {
   width: 36px;
   height: 36px;
@@ -578,10 +585,13 @@ h2 {
 .flag-dot--blue { background: #4e8fd6; border-color: #4e8fd6; }
 .flag-dot--purple { background: #9169c9; border-color: #9169c9; }
 
+/* position: fixed (not absolute) and set inline from the flag dot's
+   getBoundingClientRect() — .row-list clips overflow for its rounded
+   corners, and an absolutely-positioned dropdown is clipped by that same
+   ancestor whenever it's the last row in a (usually short) day group,
+   which is most of them. Fixed positioning breaks out of that clip. */
 .flag-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
+  position: fixed;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
@@ -637,6 +647,17 @@ h2 {
 .amount-edit-input {
   width: 96px;
   text-align: right;
+}
+
+select.field-invalid,
+input.field-invalid {
+  border-color: var(--red);
+}
+
+.inline-error {
+  font-size: 12px;
+  color: var(--red);
+  flex: 0 0 auto;
 }
 
 /* ---------- Forms / controls ---------- */
