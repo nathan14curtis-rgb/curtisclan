@@ -43,6 +43,16 @@ export function EnvelopePieChart({ slices }: Props) {
   const groupSeen = new Map<string, number>();
   let angle = -Math.PI / 2;
 
+  // Each slice's raw fill ratio is spent/planned for that one envelope, so
+  // a month where nothing's close to its budget yet left every slice tiny
+  // and the chart mostly empty. Scale the whole chart up so the largest
+  // slice present reaches the outer guide ring — once something actually
+  // crosses 100%, stop scaling so the ring keeps meaning "fully spent" and
+  // overspend still reads as overspend past it.
+  const rawRatios = slices.map((s) => (s.plannedCents > 0 ? s.spentCents / s.plannedCents : 0));
+  const maxRawRatio = Math.max(0, ...rawRatios);
+  const scale = maxRawRatio > 0 && maxRawRatio < 1 ? 1 / maxRawRatio : 1;
+
   const geometry = slices.map((s, i) => {
     if (!groupBase.has(s.groupName)) {
       groupBase.set(s.groupName, GROUP_BASE_COLORS[groupBase.size % GROUP_BASE_COLORS.length]!);
@@ -57,7 +67,7 @@ export function EnvelopePieChart({ slices }: Props) {
     const a1 = angle + sweep;
     angle = a1;
     const ratio = s.plannedCents > 0 ? s.spentCents / s.plannedCents : 0;
-    const r = Math.max(6, R * Math.min(ratio, 1.22));
+    const r = Math.max(6, R * Math.min(ratio * scale, 1.22));
     const large = sweep > Math.PI ? 1 : 0;
     const [x0, y0] = pt(r, a0);
     const [x1, y1] = pt(r, a1);
