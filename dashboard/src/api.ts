@@ -344,6 +344,18 @@ export const api = {
 
   listRecurringPatterns: (householdId: string, status?: RecurringPatternStatus) =>
     request<RecurringPattern[]>(`/households/${householdId}/recurring-patterns${status ? `?status=${status}` : ""}`),
+  createRecurringPattern: (
+    householdId: string,
+    input: {
+      merchantPattern: string;
+      kind: "expense" | "income";
+      dayOfMonth: number;
+      dayTolerance?: number;
+      categoryId?: string;
+      newCategoryName?: string;
+      monthlyTargetCents?: number;
+    },
+  ) => request<RecurringPattern>(`/households/${householdId}/recurring-patterns`, { method: "POST", body: JSON.stringify(input) }),
   detectRecurringPatterns: (householdId: string) =>
     request<RecurringPattern[]>(`/households/${householdId}/recurring-patterns/detect`, { method: "POST" }),
   confirmRecurringPattern: (householdId: string, patternId: string, input: { categoryId?: string; newCategoryName?: string; kind?: "expense" | "income" }) =>
