@@ -124,16 +124,18 @@ modal.
 
 ### Phase 5 — Spending Plan rows
 
-- [ ] `PlanRow` — one row component for income, bills, and spend: title,
+- [x] `PlanRow` — one row component for income, bills, and spend: title,
       date chip, status badge (Received / Upcoming / Pending / Paid),
       category, series icon, amount, `⋮`.
-- [ ] Row `⋮`: Edit transaction, Unlink transaction, Exclude from Spending
+- [x] Row `⋮`: Edit transaction, Unlink transaction, Exclude from Spending
       Plan, View series, Skip this occurrence.
-- [ ] Included / Excluded split per section, with the excluded group
+- [x] Included / Excluded split per section, with the excluded group
       collapsed and counted (`Excluded this month (N)`).
-- [ ] Section totals count included rows only, and include `Upcoming`
+- [x] Section totals count included rows only, and include `Upcoming`
       projections so the plan reads forward, not just backward.
-- [ ] Income section renders projected paychecks alongside received ones.
+- [x] Income section renders projected paychecks alongside received ones.
+- [x] Bills and Planned spend get the same rows through the envelope
+      drilldown, which replaced its category-move dropdown with `PlanRow`.
 
 ### Phase 6 — Series management
 

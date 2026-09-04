@@ -9,9 +9,19 @@ import {
   type EnvelopeMonthSummary,
   type RecurringPattern,
   type RecurringPatternFrequency,
+  type SeriesOccurrence,
   type Transaction,
 } from "../api";
 import { formatCents, currentMonth } from "../format";
+import { OccurrenceDetailModal, TransactionDetailModal } from "./TransactionDetailModal";
+import {
+  IncludedExcludedList,
+  PlanRow,
+  planItemAmountCents,
+  planItemCountsTowardTotal,
+  planItemDate,
+  type PlanItem,
+} from "./PlanRow";
 
 interface Props {
   householdId: string;
@@ -235,47 +245,21 @@ function EnvelopeDrilldown({
   householdId,
   envelope,
   category,
-  categories,
-  transactions,
-  onTransactionsChanged,
+  items,
+  renderRow,
   onBalanceAdjusted,
 }: {
   householdId: string;
   envelope: Envelope;
   category: Category | undefined;
-  categories: Category[];
-  transactions: Transaction[];
-  onTransactionsChanged: () => Promise<void>;
+  items: PlanItem[];
+  renderRow: (item: PlanItem) => React.ReactNode;
   onBalanceAdjusted: () => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
   const [adjustAmount, setAdjustAmount] = useState("");
   const [adjustNote, setAdjustNote] = useState("");
   const [adjusting, setAdjusting] = useState(false);
-
-  const budgetableCategories = useMemo(
-    () => categories.filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings" || c.kind === "income")),
-    [categories],
-  );
-  const envelopeTransactions = useMemo(
-    () => transactions.filter((t) => t.category_id === envelope.category_id).sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1)),
-    [transactions, envelope.category_id],
-  );
-
-  async function moveTransaction(transactionId: string, categoryId: string) {
-    if (!categoryId || categoryId === envelope.category_id) return;
-    setBusyId(transactionId);
-    setError(null);
-    try {
-      await api.categorizeTransaction(householdId, transactionId, { categoryId });
-      await onTransactionsChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to move transaction");
-    } finally {
-      setBusyId(null);
-    }
-  }
 
   async function adjustBalance(e: FormEvent) {
     e.preventDefault();
@@ -298,35 +282,14 @@ function EnvelopeDrilldown({
   return (
     <div className="card card--padded" style={{ marginTop: -8, display: "flex", flexDirection: "column", gap: 16 }}>
       <div>
-        <h3 style={{ margin: "0 0 4px" }}>{category?.name ?? "Envelope"} — transactions</h3>
-        <p className="hint" style={{ margin: 0 }}>Move a transaction to a different category, or adjust this envelope's balance with a one-time correction.</p>
+        <h3 style={{ margin: "0 0 4px" }}>{category?.name ?? "Envelope"} — this month</h3>
+        <p className="hint" style={{ margin: 0 }}>
+          What has posted and what is still expected. Open a row to edit it, or use its ⋮ to unlink it from its series or leave
+          it out of the plan.
+        </p>
       </div>
 
-      <div className="row-list">
-        {envelopeTransactions.map((t) => (
-          <div className="row-item" key={t.id}>
-            <div className="row-figure" style={{ flex: "1 1 auto" }}>
-              <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
-              <span className="row-meta">{t.posted_at}</span>
-            </div>
-            <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
-              {formatCents(t.amount_cents)}
-            </span>
-            <select value={envelope.category_id} disabled={busyId === t.id} onChange={(e) => moveTransaction(t.id, e.target.value)}>
-              {budgetableCategories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ))}
-        {envelopeTransactions.length === 0 && (
-          <div className="row-item">
-            <span className="hint">No transactions in this envelope yet this period.</span>
-          </div>
-        )}
-      </div>
+      <IncludedExcludedList items={items} emptyLabel="Nothing in this envelope yet this period." renderRow={renderRow} />
 
       <form className="row" onSubmit={adjustBalance}>
         <input
@@ -693,13 +656,12 @@ function EnvelopeRow({
   category,
   summary,
   month,
-  categories,
-  transactions,
+  items,
+  renderRow,
   isExpanded,
   onToggleExpand,
   onEdit,
   onChanged,
-  onTransactionsChanged,
   onArchive,
 }: {
   householdId: string;
@@ -707,13 +669,12 @@ function EnvelopeRow({
   category: Category | undefined;
   summary: EnvelopeMonthSummary | undefined;
   month: string;
-  categories: Category[];
-  transactions: Transaction[];
+  items: PlanItem[];
+  renderRow: (item: PlanItem) => React.ReactNode;
   isExpanded: boolean;
   onToggleExpand: () => void;
   onEdit: () => void;
   onChanged: () => Promise<void>;
-  onTransactionsChanged: () => Promise<void>;
   onArchive: () => void;
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
@@ -724,13 +685,8 @@ function EnvelopeRow({
   const rolloverCents = target !== null ? balance - target : 0;
   const over = balance < 0;
 
-  const txnCount = useMemo(
-    () =>
-      transactions.filter(
-        (t) => t.category_id === envelope.category_id && !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month),
-      ).length,
-    [transactions, envelope.category_id, month],
-  );
+  const txnCount = items.filter((i) => i.kind === "transaction" && !i.transaction.excluded_from_budget).length;
+  const upcomingCount = items.filter((i) => i.kind === "occurrence" && i.occurrence.status === "upcoming").length;
 
   async function releaseUnspentFunds() {
     if (rolloverCents <= 0) return;
@@ -795,7 +751,8 @@ function EnvelopeRow({
         <div className="row-figure" style={{ flex: "1 1 220px", minWidth: 180 }}>
           <span className="row-title">{category?.name ?? "Unknown category"}</span>
           <span className="row-meta" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            {txnCount} transaction{txnCount === 1 ? "" : "s"} in:
+            {txnCount} transaction{txnCount === 1 ? "" : "s"}
+            {upcomingCount > 0 ? `, ${upcomingCount} upcoming` : ""} in:
             <span className="badge badge--soft badge--muted">{envelope.group_name}</span>
             <span aria-hidden title="Rolls over month to month" style={{ color: "var(--faint)" }}>⟲</span>
           </span>
@@ -865,9 +822,8 @@ function EnvelopeRow({
           householdId={householdId}
           envelope={envelope}
           category={category}
-          categories={categories}
-          transactions={transactions}
-          onTransactionsChanged={onTransactionsChanged}
+          items={items}
+          renderRow={renderRow}
           onBalanceAdjusted={onChanged}
         />
       )}
@@ -1199,6 +1155,43 @@ function AddIncomeModal({
   );
 }
 
+/**
+ * Weave posted transactions together with the month's projected
+ * occurrences into one ordered list of plan rows.
+ *
+ * An occurrence that a transaction already paid is not a second row — it
+ * is that transaction, wearing its series link — so a matched occurrence
+ * folds into the transaction it matched rather than doubling it. What is
+ * left over (nothing has posted for it yet) becomes its own upcoming row.
+ */
+function buildPlanItems(
+  transactions: Transaction[],
+  occurrences: SeriesOccurrence[],
+  patternById: Map<string, RecurringPattern>,
+): PlanItem[] {
+  const occurrenceByTransaction = new Map(
+    occurrences.filter((o) => o.matched_transaction_id).map((o) => [o.matched_transaction_id!, o]),
+  );
+
+  const items: PlanItem[] = transactions.map((transaction) => {
+    const occurrence = occurrenceByTransaction.get(transaction.id);
+    return {
+      kind: "transaction",
+      id: transaction.id,
+      transaction,
+      occurrence,
+      pattern: occurrence ? patternById.get(occurrence.pattern_id) : undefined,
+    };
+  });
+
+  for (const occurrence of occurrences) {
+    if (occurrence.matched_transaction_id) continue;
+    items.push({ kind: "occurrence", id: occurrence.id, occurrence, pattern: patternById.get(occurrence.pattern_id) });
+  }
+
+  return items.sort((a, b) => planItemDate(b).localeCompare(planItemDate(a)));
+}
+
 export function EnvelopesPage({ householdId, accounts, categories, envelopes, envelopeSummaries, transactions, currentUserId, onChanged, onTransactionsChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [editingEnvelope, setEditingEnvelope] = useState<Envelope | null>(null);
@@ -1214,6 +1207,10 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
   const [patterns, setPatterns] = useState<RecurringPattern[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [detectError, setDetectError] = useState<string | null>(null);
+  const [occurrences, setOccurrences] = useState<SeriesOccurrence[]>([]);
+  const [editingTransaction, setEditingTransaction] = useState<PlanItem | null>(null);
+  const [editingOccurrence, setEditingOccurrence] = useState<SeriesOccurrence | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
 
   const refreshPatterns = async () => {
     try {
@@ -1225,8 +1222,23 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
       console.error("Failed to load recurring patterns:", err);
     }
   };
+  // Reading occurrences generates and reconciles them server-side, so this
+  // is also what turns a posted paycheck into a "Received" row.
+  const refreshOccurrences = async () => {
+    try {
+      setOccurrences(await api.listOccurrences(householdId, currentMonth()));
+    } catch (err) {
+      // A deployment without migration 0010 has no series_occurrence
+      // table. Everything that isn't projection still works, so the plan
+      // falls back to posted transactions only rather than going blank.
+      console.error("Failed to load projected occurrences:", err);
+      setOccurrences([]);
+    }
+  };
+
   useEffect(() => {
     refreshPatterns();
+    refreshOccurrences();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [householdId]);
 
@@ -1282,19 +1294,38 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
   const plannedEnvelopes = useMemo(() => nonBills.filter((e) => e.monthly_target_cents !== null), [nonBills]);
   const otherEnvelopes = useMemo(() => nonBills.filter((e) => e.monthly_target_cents === null), [nonBills]);
 
-  // Flat transactions, not grouped by income category ("Paycheck" vs.
-  // "Other Income") — the summary tab just says "Income" and the
-  // breakdown is every deposit that landed there this month.
+  const patternById = useMemo(() => new Map(patterns.map((p) => [p.id, p])), [patterns]);
+
+  // Flat rows, not grouped by income category ("Paycheck" vs. "Other
+  // Income") — the summary tab just says "Income" and the breakdown is
+  // every deposit this month, received or still expected. Excluded rows
+  // stay in the list: the section groups them rather than hiding them, so
+  // excluding something is recoverable instead of a hole.
   const incomeTransactions = useMemo(
-    () =>
-      transactions
-        .filter(
-          (t) => !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month) && categoryById.get(t.category_id ?? "")?.kind === "income",
-        )
-        .sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1)),
+    () => transactions.filter((t) => !t.is_transfer && t.posted_at.startsWith(month) && categoryById.get(t.category_id ?? "")?.kind === "income"),
     [transactions, categoryById, month],
   );
-  const incomeThisMonthCents = useMemo(() => incomeTransactions.reduce((sum, t) => sum + t.amount_cents, 0), [incomeTransactions]);
+  const incomeOccurrences = useMemo(
+    () => occurrences.filter((o) => patternById.get(o.pattern_id)?.kind === "income"),
+    [occurrences, patternById],
+  );
+  const incomeItems = useMemo(
+    () => buildPlanItems(incomeTransactions, incomeOccurrences, patternById),
+    [incomeTransactions, incomeOccurrences, patternById],
+  );
+  // What the plan expects this month: received deposits plus the ones
+  // still to come. An excluded or skipped row counts toward neither.
+  const incomeThisMonthCents = useMemo(
+    () => incomeItems.filter(planItemCountsTowardTotal).reduce((sum, item) => sum + (planItemAmountCents(item) ?? 0), 0),
+    [incomeItems],
+  );
+  const incomeReceivedCents = useMemo(
+    () =>
+      incomeItems
+        .filter((i) => i.kind === "transaction" && planItemCountsTowardTotal(i))
+        .reduce((sum, item) => sum + (planItemAmountCents(item) ?? 0), 0),
+    [incomeItems],
+  );
 
   const allocatedForSpendCents = useMemo(
     () => plannedEnvelopes.filter((e) => categoryById.get(e.category_id)?.kind === "expense").reduce((sum, e) => sum + (e.monthly_target_cents ?? 0), 0),
@@ -1334,10 +1365,14 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
   const otherSpendCategoryIds = useMemo(() => new Set(otherEnvelopes.map((e) => e.category_id)), [otherEnvelopes]);
   const otherSpendTransactions = useMemo(
     () =>
-      transactions
-        .filter((t) => !t.is_transfer && !t.excluded_from_budget && t.posted_at.startsWith(month) && t.category_id && otherSpendCategoryIds.has(t.category_id))
-        .sort((a, b) => (a.posted_at < b.posted_at ? 1 : -1)),
+      transactions.filter(
+        (t) => !t.is_transfer && t.posted_at.startsWith(month) && t.category_id && otherSpendCategoryIds.has(t.category_id),
+      ),
     [transactions, otherSpendCategoryIds, month],
+  );
+  const otherSpendItems = useMemo(
+    () => buildPlanItems(otherSpendTransactions, [], patternById),
+    [otherSpendTransactions, patternById],
   );
 
   function groupByName(list: Envelope[]) {
@@ -1350,6 +1385,90 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
     return [...byGroup.entries()].sort(([a], [b]) => a.localeCompare(b));
   }
   const groupedPlanned = useMemo(() => groupByName(plannedEnvelopes), [plannedEnvelopes]);
+
+  /** Refresh everything a row action can touch: the transaction list, the
+   * envelope summaries the totals are built from, and the occurrences
+   * whose statuses follow from both. */
+  async function refreshAfterRowAction() {
+    await Promise.all([onChanged(), onTransactionsChanged(), refreshOccurrences()]);
+  }
+
+  async function toggleExcluded(item: PlanItem) {
+    setRowError(null);
+    try {
+      if (item.kind === "transaction") {
+        await api.setTransactionExcluded(householdId, item.transaction.id, !item.transaction.excluded_from_budget);
+      } else {
+        // An occurrence has no transaction to exclude, so "leave it out of
+        // this month" is a skip.
+        await api.updateOccurrence(householdId, item.occurrence.id, { status: item.occurrence.status === "skipped" ? "upcoming" : "skipped" });
+      }
+      await refreshAfterRowAction();
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : "Failed to update the row");
+    }
+  }
+
+  async function unlinkFromSeries(item: PlanItem) {
+    const occurrence = item.occurrence;
+    if (!occurrence) return;
+    setRowError(null);
+    try {
+      await api.unlinkOccurrence(householdId, occurrence.id);
+      await refreshAfterRowAction();
+    } catch (err) {
+      setRowError(err instanceof Error ? err.message : "Failed to unlink");
+    }
+  }
+
+  /** The row's ⋮ — the same five actions Simplifi offers, minus the ones
+   * that have no meaning here, and with each one hidden when it cannot
+   * apply (there is nothing to unlink on a row with no series). */
+  function rowActions(item: PlanItem) {
+    const pattern = item.pattern;
+    const excluded = item.kind === "transaction" ? Boolean(item.transaction.excluded_from_budget) : item.occurrence.status === "skipped";
+    const actions = [
+      {
+        label: item.kind === "transaction" ? "Edit transaction" : "Edit this occurrence",
+        icon: "✎",
+        onClick: () => (item.kind === "transaction" ? setEditingTransaction(item) : setEditingOccurrence(item.occurrence)),
+      },
+    ];
+    if (item.kind === "transaction" && item.occurrence) {
+      actions.push({ label: "Unlink transaction", icon: "⇤", onClick: () => void unlinkFromSeries(item) });
+    }
+    actions.push({
+      label: excluded ? "Include in Spending Plan" : "Exclude from Spending Plan",
+      icon: excluded ? "＋" : "⊘",
+      onClick: () => void toggleExcluded(item),
+    });
+    if (pattern) {
+      const envelope = envelopes.find((e) => e.category_id === pattern.category_id);
+      if (envelope) actions.push({ label: "View series", icon: "⇗", onClick: () => setEditingEnvelope(envelope) });
+    }
+    return actions;
+  }
+
+  /** One envelope's rows: what posted into its category this month, plus
+   * any occurrence of a series filed under it that hasn't posted yet. */
+  function itemsForEnvelope(envelope: Envelope): PlanItem[] {
+    const envelopeTransactions = transactions.filter((t) => t.category_id === envelope.category_id && t.posted_at.startsWith(month));
+    const envelopeOccurrences = occurrences.filter((o) => patternById.get(o.pattern_id)?.category_id === envelope.category_id);
+    return buildPlanItems(envelopeTransactions, envelopeOccurrences, patternById);
+  }
+
+  function renderPlanRow(item: PlanItem) {
+    const categoryId = item.kind === "transaction" ? item.transaction.category_id : (item.pattern?.category_id ?? null);
+    return (
+      <PlanRow
+        key={item.id}
+        item={item}
+        category={categoryId ? categoryById.get(categoryId) : undefined}
+        onOpen={() => (item.kind === "transaction" ? setEditingTransaction(item) : setEditingOccurrence(item.occurrence))}
+        actions={rowActions(item)}
+      />
+    );
+  }
 
   async function archive(categoryId: string) {
     setError(null);
@@ -1427,13 +1546,12 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
               category={categoryById.get(envelope.category_id)}
               summary={envelopeSummaries[envelope.id]}
               month={month}
-              categories={categories}
-              transactions={transactions}
+              items={itemsForEnvelope(envelope)}
+              renderRow={renderPlanRow}
               isExpanded={expandedId === envelope.id}
               onToggleExpand={() => setExpandedId(expandedId === envelope.id ? null : envelope.id)}
               onEdit={() => setEditingEnvelope(envelope)}
               onChanged={onChanged}
-              onTransactionsChanged={onTransactionsChanged}
               onArchive={() => archive(envelope.category_id)}
             />
           ))}
@@ -1498,7 +1616,11 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
           collapsed to one summary row until expanded. */}
       <SummaryTab
         title="Income"
-        itemCountLabel={`${incomeTransactions.length} transaction${incomeTransactions.length === 1 ? "" : "s"} this month`}
+        itemCountLabel={
+          incomeThisMonthCents === incomeReceivedCents
+            ? `${incomeItems.length} deposit${incomeItems.length === 1 ? "" : "s"} this month`
+            : `${formatCents(incomeReceivedCents)} received of ${formatCents(incomeThisMonthCents)} expected`
+        }
         totalCents={incomeThisMonthCents}
         isExpanded={expandedTab === "income"}
         onToggle={() => setExpandedTab((t) => (t === "income" ? null : "income"))}
@@ -1519,24 +1641,7 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
             }}
           />
         )}
-        <div className="row-list">
-          {incomeTransactions.map((t) => (
-            <div className="row-item" key={t.id}>
-              <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
-                <span className="row-meta">{t.posted_at}</span>
-              </div>
-              <span className="money positive" style={{ minWidth: 96, textAlign: "right" }}>
-                {formatCents(t.amount_cents)}
-              </span>
-            </div>
-          ))}
-          {incomeTransactions.length === 0 && (
-            <div className="row-item">
-              <span className="hint">No income this month yet.</span>
-            </div>
-          )}
-        </div>
+        <IncludedExcludedList items={incomeItems} emptyLabel="No income this month yet." renderRow={renderPlanRow} />
       </SummaryTab>
 
       <SummaryTab
@@ -1570,13 +1675,12 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
               category={categoryById.get(envelope.category_id)}
               summary={envelopeSummaries[envelope.id]}
               month={month}
-              categories={categories}
-              transactions={transactions}
+              items={itemsForEnvelope(envelope)}
+              renderRow={renderPlanRow}
               isExpanded={expandedId === envelope.id}
               onToggleExpand={() => setExpandedId(expandedId === envelope.id ? null : envelope.id)}
               onEdit={() => setEditingEnvelope(envelope)}
               onChanged={onChanged}
-              onTransactionsChanged={onTransactionsChanged}
               onArchive={() => archive(envelope.category_id)}
             />
           ))}
@@ -1615,31 +1719,12 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
 
       <SummaryTab
         title="Other spend"
-        itemCountLabel={`${otherSpendTransactions.length} transaction${otherSpendTransactions.length === 1 ? "" : "s"} this month`}
+        itemCountLabel={`${otherSpendItems.length} transaction${otherSpendItems.length === 1 ? "" : "s"} this month`}
         totalCents={otherSpendCents}
         isExpanded={expandedTab === "other"}
         onToggle={() => setExpandedTab((t) => (t === "other" ? null : "other"))}
       >
-        <div className="row-list">
-          {otherSpendTransactions.map((t) => (
-            <div className="row-item" key={t.id}>
-              <div className="row-figure" style={{ flex: "1 1 auto" }}>
-                <span className="row-title">{t.normalized_merchant ?? t.raw_description}</span>
-                <span className="row-meta">
-                  {t.posted_at} · {categoryById.get(t.category_id ?? "")?.name ?? "Uncategorized"}
-                </span>
-              </div>
-              <span className="money" style={{ minWidth: 96, textAlign: "right" }}>
-                {formatCents(t.amount_cents)}
-              </span>
-            </div>
-          ))}
-          {otherSpendTransactions.length === 0 && (
-            <div className="row-item">
-              <span className="hint">Nothing untargeted this month.</span>
-            </div>
-          )}
-        </div>
+        <IncludedExcludedList items={otherSpendItems} emptyLabel="Nothing untargeted this month." renderRow={renderPlanRow} />
       </SummaryTab>
 
       <section className="card card--padded">
@@ -1708,6 +1793,33 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
             />
           );
         })()}
+
+      {rowError && <p className="error">{rowError}</p>}
+
+      {editingTransaction?.kind === "transaction" && (
+        <TransactionDetailModal
+          householdId={householdId}
+          transaction={editingTransaction.transaction}
+          accounts={accounts}
+          categories={categories}
+          currentUserId={currentUserId}
+          occurrence={editingTransaction.occurrence}
+          pattern={editingTransaction.pattern}
+          onClose={() => setEditingTransaction(null)}
+          onSaved={refreshAfterRowAction}
+        />
+      )}
+
+      {editingOccurrence && (
+        <OccurrenceDetailModal
+          householdId={householdId}
+          occurrence={editingOccurrence}
+          pattern={patternById.get(editingOccurrence.pattern_id)}
+          category={categoryById.get(patternById.get(editingOccurrence.pattern_id)?.category_id ?? "")}
+          onClose={() => setEditingOccurrence(null)}
+          onSaved={refreshAfterRowAction}
+        />
+      )}
 
       {addingIncome && (
         <AddIncomeModal
