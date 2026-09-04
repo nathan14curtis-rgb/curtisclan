@@ -5,6 +5,7 @@ import {
   applyCategorization,
   clearCategorization,
   createTransaction,
+  deleteTransaction,
   editTransaction,
   getTransaction,
   listTransactionsWithVerifyState,
@@ -12,8 +13,10 @@ import {
   setTransactionFlag,
   splitTransaction,
   unverifyTransaction,
+  updateTransaction,
   verifyTransaction,
 } from "../db/transactions";
+import { listTagsByTransaction, listTagsForTransaction, setTransactionTags } from "../db/tags";
 import { listClassifications } from "../db/classifications";
 import { categorizeTransaction } from "../categorization/pipeline";
 
@@ -187,4 +190,72 @@ transactionsRoute.post("/:transactionId/split", async (c) => {
   } catch (err) {
     return c.json({ error: err instanceof Error ? err.message : "split failed" }, 400);
   }
+});
+
+// The transaction detail modal's one save (docs/SPENDING_PLAN_EDITING.md
+// phase 3) — payee, date, amount, account, category, note, status, flag,
+// and exclusion together, so a person correcting several fields doesn't
+// fire several requests that can half-fail. The older single-purpose
+// routes above stay for the callers that use them.
+transactionsRoute.patch("/:transactionId", async (c) => {
+  const body = await c.req.json<{
+    payee?: string;
+    postedAt?: string;
+    amountCents?: number;
+    accountId?: string;
+    categoryId?: string;
+    memo?: string | null;
+    pending?: boolean;
+    excluded?: boolean;
+    flagColor?: TransactionFlagColor | null;
+    editedByUserId?: string;
+  }>();
+
+  if (body.amountCents !== undefined && (!Number.isInteger(body.amountCents) || body.amountCents === 0)) {
+    return c.json({ error: "amountCents must be a non-zero integer number of cents" }, 400);
+  }
+  if (body.postedAt !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(body.postedAt)) {
+    return c.json({ error: "postedAt must be 'YYYY-MM-DD'" }, 400);
+  }
+  if (body.flagColor != null && !FLAG_COLORS.has(body.flagColor)) return c.json({ error: "invalid flag color" }, 400);
+
+  const transaction = await updateTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), {
+    payee: body.payee,
+    postedAt: body.postedAt,
+    amountCents: body.amountCents,
+    accountId: body.accountId,
+    categoryId: body.categoryId,
+    ...("memo" in body ? { memo: body.memo } : {}),
+    pending: body.pending,
+    excluded: body.excluded,
+    ...("flagColor" in body ? { flagColor: body.flagColor } : {}),
+    editedByUserId: body.editedByUserId,
+  });
+  return c.json(transaction);
+});
+
+transactionsRoute.delete("/:transactionId", async (c) => {
+  await deleteTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"));
+  return c.json({ ok: true });
+});
+
+// Every transaction's tags in one read, so a list page doesn't N+1.
+transactionsRoute.get("/tags", async (c) => {
+  return c.json(await listTagsByTransaction(c.env.DB, requireParam(c, "householdId")));
+});
+
+transactionsRoute.get("/:transactionId/tags", async (c) => {
+  return c.json(await listTagsForTransaction(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId")));
+});
+
+// A set, not a diff: the modal hands back what the tags should be. Names
+// that don't exist yet become tags, which is how tags get created in
+// practice (typing a new one into the picker).
+transactionsRoute.put("/:transactionId/tags", async (c) => {
+  const body = await c.req.json<{ tagIds?: string[]; tagNames?: string[] }>();
+  const tags = await setTransactionTags(c.env.DB, requireParam(c, "householdId"), requireParam(c, "transactionId"), {
+    tagIds: body.tagIds,
+    tagNames: body.tagNames,
+  });
+  return c.json(tags);
 });

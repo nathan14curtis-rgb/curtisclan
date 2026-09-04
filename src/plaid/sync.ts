@@ -24,6 +24,7 @@ import {
   updateTransactionFieldsFromPlaid,
 } from "../db/transactions";
 import { detectRecurringPatterns } from "../db/recurringPatterns";
+import { syncOccurrences } from "../envelopes/occurrences";
 import { detectAndMarkTransfer } from "../db/transfers";
 import { transactionsSyncPage } from "./client";
 import type { PlaidAccount, PlaidTransaction } from "./types";
@@ -221,6 +222,18 @@ export async function syncPlaidItem(env: Env, householdId: string, plaidItemId: 
   // household's whole recent history (not just what this sync brought in),
   // so a pattern spanning accounts/items still gets picked up.
   await detectRecurringPatterns(env.DB, householdId);
+
+  // Newly-posted transactions are what turn an "Upcoming" paycheck into a
+  // "Received" one, so reconcile right after the sync that brought them in
+  // rather than waiting for someone to open the Spending Plan. Idempotent,
+  // and scoped to the month the sync could have touched plus the previous
+  // one (a transaction can post a few days into the next month).
+  const now = new Date();
+  const thisMonth = now.toISOString().slice(0, 7);
+  const previous = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+  for (const month of new Set([previous, thisMonth])) {
+    await syncOccurrences(env.DB, householdId, month);
+  }
 }
 
 /** ITEM webhooks (PLAN.md §4.1): catch ITEM_LOGIN_REQUIRED and surface a

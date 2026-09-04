@@ -131,6 +131,9 @@ recurringPatternsRoute.post("/:patternId/confirm", async (c) => {
 recurringPatternsRoute.patch("/:patternId", async (c) => {
   const body = await c.req.json<{
     merchantPattern?: string;
+    categoryId?: string;
+    expectedAmountCents?: number | null;
+    endedAt?: string | null;
     frequency?: string;
     dayOfMonth?: number;
     dayOfMonth2?: number;
@@ -141,6 +144,12 @@ recurringPatternsRoute.patch("/:patternId", async (c) => {
   if (body.merchantPattern !== undefined && !body.merchantPattern.trim()) {
     return c.json({ error: "merchantPattern cannot be blank" }, 400);
   }
+  if (body.expectedAmountCents !== undefined && body.expectedAmountCents !== null && !Number.isInteger(body.expectedAmountCents)) {
+    return c.json({ error: "expectedAmountCents must be an integer number of cents, or null to clear it" }, 400);
+  }
+  if (body.endedAt !== undefined && body.endedAt !== null && !/^\d{4}-\d{2}-\d{2}$/.test(body.endedAt)) {
+    return c.json({ error: "endedAt must be 'YYYY-MM-DD', or null to un-end the series" }, 400);
+  }
   if (body.frequency !== undefined) {
     const schedule = validateSchedule(body);
     if ("error" in schedule) return c.json({ error: schedule.error }, 400);
@@ -148,6 +157,9 @@ recurringPatternsRoute.patch("/:patternId", async (c) => {
 
   const pattern = await updateRecurringPattern(c.env.DB, requireParam(c, "householdId"), requireParam(c, "patternId"), {
     merchantPattern: body.merchantPattern,
+    categoryId: body.categoryId,
+    ...("expectedAmountCents" in body ? { expectedAmountCents: body.expectedAmountCents } : {}),
+    ...("endedAt" in body ? { endedAt: body.endedAt } : {}),
     frequency: body.frequency as RecurringPatternFrequency | undefined,
     dayOfMonth: body.dayOfMonth,
     dayOfMonth2: body.dayOfMonth2,

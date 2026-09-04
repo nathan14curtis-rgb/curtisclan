@@ -162,6 +162,34 @@ export interface RecurringPattern {
   day_tolerance: number;
   status: RecurringPatternStatus;
   sample_count: number;
+  expected_amount_cents: number | null;
+  ended_at: string | null;
+}
+
+export type SeriesOccurrenceStatus = "upcoming" | "matched" | "skipped";
+
+/** One projected occurrence of a series — the 20th's paycheck exists as a
+ * row on the 4th, before any transaction does (migrations/0010,
+ * src/envelopes/occurrences.ts). */
+export interface SeriesOccurrence {
+  id: string;
+  household_id: string;
+  pattern_id: string;
+  month: string;
+  scheduled_date: string;
+  due_date: string;
+  amount_cents: number | null;
+  amount_override_cents: number | null;
+  status: SeriesOccurrenceStatus;
+  matched_transaction_id: string | null;
+  unlinked_transaction_id: string | null;
+}
+
+export interface Tag {
+  id: string;
+  household_id: string;
+  name: string;
+  color: string | null;
 }
 
 export interface RecurringPatternScheduleInput {
@@ -380,7 +408,11 @@ export const api = {
       monthlyTargetCents?: number;
     } & RecurringPatternScheduleInput,
   ) => request<RecurringPattern>(`/households/${householdId}/recurring-patterns`, { method: "POST", body: JSON.stringify(input) }),
-  updateRecurringPattern: (householdId: string, patternId: string, input: { merchantPattern?: string } & RecurringPatternScheduleInput) =>
+  updateRecurringPattern: (
+    householdId: string,
+    patternId: string,
+    input: { merchantPattern?: string; categoryId?: string; expectedAmountCents?: number | null; endedAt?: string | null } & RecurringPatternScheduleInput,
+  ) =>
     request<RecurringPattern>(`/households/${householdId}/recurring-patterns/${patternId}`, { method: "PATCH", body: JSON.stringify(input) }),
   detectRecurringPatterns: (householdId: string) =>
     request<RecurringPattern[]>(`/households/${householdId}/recurring-patterns/detect`, { method: "POST" }),
@@ -393,6 +425,51 @@ export const api = {
     householdId: string,
     input: { accountId: string; postedAt: string; amountCents: number; description: string; categoryId: string; memo?: string; createdByUserId?: string },
   ) => request<Transaction>(`/households/${householdId}/transactions`, { method: "POST", body: JSON.stringify(input) }),
+
+  // The transaction detail modal's one save — every field it shows, in a
+  // single write. Omitted fields are left alone; an explicit null clears
+  // (memo, flagColor).
+  updateTransaction: (
+    householdId: string,
+    transactionId: string,
+    input: {
+      payee?: string;
+      postedAt?: string;
+      amountCents?: number;
+      accountId?: string;
+      categoryId?: string;
+      memo?: string | null;
+      pending?: boolean;
+      excluded?: boolean;
+      flagColor?: TransactionFlagColor | null;
+      editedByUserId?: string;
+    },
+  ) => request<Transaction>(`/households/${householdId}/transactions/${transactionId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteTransaction: (householdId: string, transactionId: string) =>
+    request<{ ok: true }>(`/households/${householdId}/transactions/${transactionId}`, { method: "DELETE" }),
+  splitTransaction: (householdId: string, transactionId: string, splits: Array<{ amountCents: number; categoryId: string; memo?: string }>) =>
+    request<Transaction[]>(`/households/${householdId}/transactions/${transactionId}/split`, { method: "POST", body: JSON.stringify({ splits }) }),
+
+  listTags: (householdId: string) => request<Tag[]>(`/households/${householdId}/tags`),
+  createTag: (householdId: string, input: { name: string; color?: string | null }) =>
+    request<Tag>(`/households/${householdId}/tags`, { method: "POST", body: JSON.stringify(input) }),
+  deleteTag: (householdId: string, tagId: string) => request<{ ok: true }>(`/households/${householdId}/tags/${tagId}`, { method: "DELETE" }),
+  // Every transaction's tags in one read, so a list page doesn't N+1.
+  listTagsByTransaction: (householdId: string) => request<Record<string, Tag[]>>(`/households/${householdId}/transactions/tags`),
+  setTransactionTags: (householdId: string, transactionId: string, input: { tagIds?: string[]; tagNames?: string[] }) =>
+    request<Tag[]>(`/households/${householdId}/transactions/${transactionId}/tags`, { method: "PUT", body: JSON.stringify(input) }),
+
+  // Generates and reconciles before returning, so this is the whole read
+  // the Spending Plan needs for a month.
+  listOccurrences: (householdId: string, month: string) =>
+    request<SeriesOccurrence[]>(`/households/${householdId}/occurrences?month=${month}`),
+  updateOccurrence: (
+    householdId: string,
+    occurrenceId: string,
+    input: { amountOverrideCents?: number | null; dueDate?: string; status?: "upcoming" | "skipped" },
+  ) => request<SeriesOccurrence>(`/households/${householdId}/occurrences/${occurrenceId}`, { method: "PATCH", body: JSON.stringify(input) }),
+  unlinkOccurrence: (householdId: string, occurrenceId: string) =>
+    request<SeriesOccurrence>(`/households/${householdId}/occurrences/${occurrenceId}/unlink`, { method: "POST" }),
 
   // The same conversation the household has by text, from the dashboard —
   // one thread, one agent (src/messaging/agent.ts).
