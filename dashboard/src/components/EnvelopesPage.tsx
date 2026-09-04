@@ -656,7 +656,6 @@ function EnvelopeRow({
   envelope,
   category,
   summary,
-  month,
   items,
   renderRow,
   isExpanded,
@@ -670,7 +669,6 @@ function EnvelopeRow({
   envelope: Envelope;
   category: Category | undefined;
   summary: EnvelopeMonthSummary | undefined;
-  month: string;
   items: PlanItem[];
   renderRow: (item: PlanItem) => React.ReactNode;
   isExpanded: boolean;
@@ -1551,7 +1549,6 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
               envelope={envelope}
               category={categoryById.get(envelope.category_id)}
               summary={envelopeSummaries[envelope.id]}
-              month={month}
               items={itemsForEnvelope(envelope)}
               renderRow={renderPlanRow}
               isExpanded={expandedId === envelope.id}
@@ -1587,7 +1584,7 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
         <div className="card card--padded stat-tile">
           <span className="label">Unallocated</span>
           <span className="figure">{formatCents(unallocatedCents)}</span>
-          <span className="detail">This month's income, minus Bills and everything allocated above.</span>
+          <span className="detail">This month's income — received plus still expected — minus Bills and everything allocated above.</span>
         </div>
       </div>
 
@@ -1685,7 +1682,6 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
               envelope={envelope}
               category={categoryById.get(envelope.category_id)}
               summary={envelopeSummaries[envelope.id]}
-              month={month}
               items={itemsForEnvelope(envelope)}
               renderRow={renderPlanRow}
               isExpanded={expandedId === envelope.id}
