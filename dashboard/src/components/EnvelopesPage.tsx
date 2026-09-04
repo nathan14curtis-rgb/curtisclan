@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { formatCents, currentMonth } from "../format";
 import { OccurrenceDetailModal, TransactionDetailModal } from "./TransactionDetailModal";
+import { SeriesDetailModal } from "./SeriesDetailModal";
 import {
   IncludedExcludedList,
   PlanRow,
@@ -663,6 +664,7 @@ function EnvelopeRow({
   onEdit,
   onChanged,
   onArchive,
+  onViewSeries,
 }: {
   householdId: string;
   envelope: Envelope;
@@ -676,6 +678,9 @@ function EnvelopeRow({
   onEdit: () => void;
   onChanged: () => Promise<void>;
   onArchive: () => void;
+  // Only set when a confirmed recurring series feeds this envelope — a
+  // plain everyday envelope has no series to view.
+  onViewSeries?: () => void;
 }) {
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -807,7 +812,8 @@ function EnvelopeRow({
             },
             { label: "Edit", icon: "🗓", onClick: onEdit },
             { label: "Change rollover amount", icon: "⇄", onClick: changeRolloverAmount },
-            { label: "Edit expense series", icon: "✎", onClick: editExpenseSeries },
+            ...(onViewSeries ? [{ label: "View series", icon: "⇗", onClick: onViewSeries }] : []),
+            { label: "Rename", icon: "✎", onClick: editExpenseSeries },
             { label: "Archive", icon: "🗄", danger: true, onClick: onArchive },
           ]}
         />
@@ -1210,6 +1216,7 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
   const [occurrences, setOccurrences] = useState<SeriesOccurrence[]>([]);
   const [editingTransaction, setEditingTransaction] = useState<PlanItem | null>(null);
   const [editingOccurrence, setEditingOccurrence] = useState<SeriesOccurrence | null>(null);
+  const [viewingSeries, setViewingSeries] = useState<RecurringPattern | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
 
   const refreshPatterns = async () => {
@@ -1443,8 +1450,7 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
       onClick: () => void toggleExcluded(item),
     });
     if (pattern) {
-      const envelope = envelopes.find((e) => e.category_id === pattern.category_id);
-      if (envelope) actions.push({ label: "View series", icon: "⇗", onClick: () => setEditingEnvelope(envelope) });
+      actions.push({ label: "View series", icon: "⇗", onClick: () => setViewingSeries(pattern) });
     }
     return actions;
   }
@@ -1553,6 +1559,11 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
               onEdit={() => setEditingEnvelope(envelope)}
               onChanged={onChanged}
               onArchive={() => archive(envelope.category_id)}
+              onViewSeries={
+                confirmedPatternByCategory.has(envelope.category_id)
+                  ? () => setViewingSeries(confirmedPatternByCategory.get(envelope.category_id)!)
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -1682,6 +1693,11 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
               onEdit={() => setEditingEnvelope(envelope)}
               onChanged={onChanged}
               onArchive={() => archive(envelope.category_id)}
+              onViewSeries={
+                confirmedPatternByCategory.has(envelope.category_id)
+                  ? () => setViewingSeries(confirmedPatternByCategory.get(envelope.category_id)!)
+                  : undefined
+              }
             />
           ))}
           {bills.length === 0 && (
@@ -1818,6 +1834,28 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
           category={categoryById.get(patternById.get(editingOccurrence.pattern_id)?.category_id ?? "")}
           onClose={() => setEditingOccurrence(null)}
           onSaved={refreshAfterRowAction}
+        />
+      )}
+
+      {viewingSeries && (
+        <SeriesDetailModal
+          householdId={householdId}
+          pattern={viewingSeries}
+          categories={categories}
+          occurrences={occurrences}
+          transactions={transactions}
+          onClose={() => setViewingSeries(null)}
+          onSaved={async () => {
+            await Promise.all([refreshPatterns(), refreshOccurrences(), onChanged()]);
+          }}
+          onEditSchedule={() => {
+            // The schedule lives with the envelope's own editor (it also
+            // owns the merchant this series matches), so hand off rather
+            // than keeping two ways to change the same two fields.
+            const envelope = envelopes.find((e) => e.category_id === viewingSeries.category_id);
+            setViewingSeries(null);
+            if (envelope) setEditingEnvelope(envelope);
+          }}
         />
       )}
 

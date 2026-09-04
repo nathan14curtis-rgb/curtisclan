@@ -4,7 +4,7 @@ import { createHousehold } from "../src/db/households";
 import { createAccount } from "../src/db/accounts";
 import { listCategories } from "../src/db/categories";
 import { applyCategorization, createTransaction } from "../src/db/transactions";
-import { createConfirmedRecurringPattern } from "../src/db/recurringPatterns";
+import { createConfirmedRecurringPattern, updateRecurringPattern } from "../src/db/recurringPatterns";
 import type { RecurringPattern } from "../src/types";
 import {
   dueDatesInMonth,
@@ -245,5 +245,51 @@ describe("reconcileOccurrences", () => {
     await applyCategorization(db, household.id, txn.id, { categoryId: other.id, method: "human" });
 
     expect((await listOccurrences(db, household.id, "2026-09"))[0]!.status).toBe("upcoming");
+  });
+});
+
+describe("updateRecurringPattern — editing a series", () => {
+  async function seedSeries() {
+    const { household, utilities } = await seed();
+    const created = await createConfirmedRecurringPattern(db, household.id, {
+      categoryId: utilities.id,
+      merchantPattern: "CITY WATER",
+      kind: "expense",
+      dayOfMonth: 12,
+      expectedAmountCents: 8500,
+    });
+    return { household, utilities, created };
+  }
+
+  it("ends a series without touching what it already matched, and resumes it again", async () => {
+    const { household, created } = await seedSeries();
+    await generateOccurrences(db, household.id, "2026-09");
+
+    const ended = await updateRecurringPattern(db, household.id, created.id, { endedAt: "2026-09-01" });
+    expect(ended.ended_at).toBe("2026-09-01");
+    // The occurrence generated before the end date is still there.
+    expect((await reconcileOccurrences(db, household.id, "2026-09")).length).toBe(1);
+    // And nothing new is projected for a later month.
+    expect((await generateOccurrences(db, household.id, "2026-10")).length).toBe(0);
+
+    const resumed = await updateRecurringPattern(db, household.id, created.id, { endedAt: null });
+    expect(resumed.ended_at).toBeNull();
+    expect((await generateOccurrences(db, household.id, "2026-10")).length).toBe(1);
+  });
+
+  it("changes the expected amount, and clears it back to nothing", async () => {
+    const { household, created } = await seedSeries();
+    expect((await updateRecurringPattern(db, household.id, created.id, { expectedAmountCents: 9000 })).expected_amount_cents).toBe(9000);
+    expect((await updateRecurringPattern(db, household.id, created.id, { expectedAmountCents: null })).expected_amount_cents).toBeNull();
+    // An omitted field is left alone rather than cleared.
+    expect((await updateRecurringPattern(db, household.id, created.id, { expectedAmountCents: 9000 })).expected_amount_cents).toBe(9000);
+    expect((await updateRecurringPattern(db, household.id, created.id, { merchantPattern: "CITY WATER DEPT" })).expected_amount_cents).toBe(9000);
+  });
+
+  it("re-points a series at a different category", async () => {
+    const { household, created } = await seedSeries();
+    const categories = await listCategories(db, household.id);
+    const other = categories.find((c) => c.kind === "expense" && c.id !== created.category_id)!;
+    expect((await updateRecurringPattern(db, household.id, created.id, { categoryId: other.id })).category_id).toBe(other.id);
   });
 });

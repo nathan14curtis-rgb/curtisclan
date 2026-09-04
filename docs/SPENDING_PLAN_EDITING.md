@@ -139,11 +139,19 @@ modal.
 
 ### Phase 6 — Series management
 
-- [ ] Series detail view: schedule, expected amount, category, every
+- [x] Series detail view: schedule, expected amount, category, every
       occurrence this month and the next few, matched-history list.
-- [ ] End series / delete series (distinct from dismissing a suggestion).
-- [ ] Edit series propagates to future `upcoming` occurrences only —
+- [x] End series / resume series (distinct from dismissing a suggestion —
+      matched history stays on the plan, only future projection stops).
+- [x] Edit series propagates to future `upcoming` occurrences only —
       never rewrites matched history or an existing override.
+
+All six phases are implemented. What is deliberately not here: Simplifi's
+"Create sales receipt" (a QuickBooks integration with no counterpart in
+this app) and "Clients & Projects" (business-accounting fields for a
+household budget). "Create Rule" from the detail modal is the one piece of
+Simplifi's dialog still to wire up — `src/routes/rules.ts` already has the
+write path.
 
 ## Conventions
 
