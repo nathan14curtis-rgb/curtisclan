@@ -17,7 +17,6 @@ import { LoginPage } from "./components/LoginPage";
 import { OverviewPage } from "./components/OverviewPage";
 import { TransactionsPage } from "./components/TransactionsPage";
 import { EnvelopesPage } from "./components/EnvelopesPage";
-import { BillsPage } from "./components/BillsPage";
 import { GoalsPage } from "./components/GoalsPage";
 import { MembersPage } from "./components/MembersPage";
 import { DocumentsPage } from "./components/DocumentsPage";
@@ -45,7 +44,13 @@ export function App() {
   const [newHouseholdName, setNewHouseholdName] = useState("");
   const [newCreatorName, setNewCreatorName] = useState("");
   const [showCreateHousehold, setShowCreateHousehold] = useState(false);
-  const [activeView, setActiveView] = useState(() => localStorage.getItem(VIEW_STORAGE_KEY) ?? "Overview");
+  const [activeView, setActiveView] = useState(() => {
+    const stored = localStorage.getItem(VIEW_STORAGE_KEY);
+    // The "Bills"/Recurring tab was removed — its content lives in
+    // Spending Plan (Envelopes) now, so a stale saved view falls back to
+    // Overview instead of landing on a route nothing renders.
+    return stored && stored !== "Bills" ? stored : "Overview";
+  });
 
   function changeView(view: string) {
     setActiveView(view);
@@ -172,8 +177,6 @@ export function App() {
     let expenseSpent = 0;
     let expenseTarget = 0;
     let needingAttention = 0;
-    let billsCount = 0;
-    let billsCommittedCents = 0;
     let goalsCount = 0;
     for (const envelope of activeEnvelopes) {
       const summary = envelopeSummaries[envelope.id];
@@ -185,10 +188,6 @@ export function App() {
       if (summary && (summary.balanceCents < 0 || (envelope.monthly_target_cents && summary.spentCents >= envelope.monthly_target_cents * 0.85))) {
         needingAttention += 1;
       }
-      if (envelope.group_name.toLowerCase() === "bills") {
-        billsCount += 1;
-        billsCommittedCents += envelope.monthly_target_cents ?? 0;
-      }
       if (category?.kind === "savings" && envelope.target_date) {
         goalsCount += 1;
       }
@@ -199,8 +198,6 @@ export function App() {
       pctOfBudget: expenseTarget > 0 ? Math.round((expenseSpent / expenseTarget) * 100) : 0,
       uncategorizedCount: transactions.filter((t) => !t.category_id && !t.is_transfer).length,
       envelopesNeedingAttention: needingAttention,
-      billsCount,
-      billsCommittedCents,
       goalsCount,
       memberCount: users.length,
       assetName: asset?.name,
@@ -315,22 +312,14 @@ export function App() {
         {activeView === "Envelopes" && (
           <EnvelopesPage
             householdId={household.id}
+            accounts={accounts}
             categories={categories}
             envelopes={envelopes}
             envelopeSummaries={envelopeSummaries}
             transactions={transactions}
+            currentUserId={currentUserId}
             onChanged={refreshCategoriesAndEnvelopes}
             onTransactionsChanged={refreshTransactions}
-          />
-        )}
-        {activeView === "Bills" && (
-          <BillsPage
-            householdId={household.id}
-            categories={categories}
-            envelopes={envelopes}
-            envelopeSummaries={envelopeSummaries}
-            transactions={transactions}
-            onChanged={refreshCategoriesAndEnvelopes}
           />
         )}
         {activeView === "Goals" && (

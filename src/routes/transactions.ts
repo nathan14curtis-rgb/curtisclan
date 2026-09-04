@@ -4,6 +4,7 @@ import type { Env, TransactionFlagColor } from "../types";
 import {
   applyCategorization,
   clearCategorization,
+  createTransaction,
   editTransaction,
   getTransaction,
   listTransactionsWithVerifyState,
@@ -29,6 +30,50 @@ transactionsRoute.get("/", async (c) => {
     limit: c.req.query("limit") ? Number(c.req.query("limit")) : undefined,
   });
   return c.json(transactions);
+});
+
+// Manually-added income (or any transaction) that never came from a bank
+// feed — "add income manually" on the Spending Plan's Income tab. Created
+// straight into source='manual' and, when a person is doing the adding,
+// verified on the spot: they're not confirming a guess, they typed it.
+transactionsRoute.post("/", async (c) => {
+  const householdId = requireParam(c, "householdId");
+  const body = await c.req.json<{
+    accountId?: string;
+    postedAt?: string;
+    amountCents?: number;
+    description?: string;
+    categoryId?: string;
+    memo?: string;
+    createdByUserId?: string;
+  }>();
+
+  if (!body.accountId) return c.json({ error: "accountId is required" }, 400);
+  if (!body.postedAt) return c.json({ error: "postedAt is required" }, 400);
+  if (typeof body.amountCents !== "number" || body.amountCents === 0) return c.json({ error: "amountCents is required and must be non-zero" }, 400);
+  if (!body.description?.trim()) return c.json({ error: "description is required" }, 400);
+  if (!body.categoryId) return c.json({ error: "categoryId is required" }, 400);
+
+  const transaction = await createTransaction(c.env.DB, householdId, {
+    accountId: body.accountId,
+    postedAt: body.postedAt,
+    amountCents: body.amountCents,
+    rawDescription: body.description.trim(),
+    source: "manual",
+  });
+
+  const categorized = await applyCategorization(c.env.DB, householdId, transaction.id, {
+    categoryId: body.categoryId,
+    memo: body.memo,
+    method: "human",
+    createdByUserId: body.createdByUserId,
+  });
+
+  if (body.createdByUserId) {
+    const verified = await verifyTransaction(c.env.DB, householdId, transaction.id, body.createdByUserId);
+    return c.json(verified, 201);
+  }
+  return c.json(categorized, 201);
 });
 
 transactionsRoute.get("/:transactionId", async (c) => {

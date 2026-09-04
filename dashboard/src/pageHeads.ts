@@ -11,8 +11,6 @@ export interface PageHeadContext {
   pctOfBudget: number; // 0-100, spent/planned across funded envelopes this month
   uncategorizedCount: number;
   envelopesNeedingAttention: number; // over or within $50 of their target
-  billsCount: number;
-  billsCommittedCents: number;
   goalsCount: number;
   memberCount: number;
   assetName?: string; // set only when viewing a specific asset leaf
@@ -25,8 +23,6 @@ export interface PageHead {
   secondaryCta: string;
   primaryCta: string;
 }
-
-const money = (cents: number) => "$" + Math.round(cents / 100).toLocaleString("en-US");
 
 const DOCUMENT_VIEWS = new Set(["Insurance", "Warranties", "Identification", "Passwords"]);
 const MAINTENANCE_VIEWS = new Set(["House", "Car"]);
@@ -49,8 +45,11 @@ export function getPageHead(view: string, ctx: PageHeadContext): PageHead {
           ctx.uncategorizedCount > 0
             ? `${ctx.uncategorizedCount} transaction${ctx.uncategorizedCount === 1 ? "" : "s"} still need${ctx.uncategorizedCount === 1 ? "s" : ""} a category.`
             : "Every dollar has a home.",
-        secondaryCta: "Export CSV",
-        primaryCta: "Add expense",
+        // No header CTAs here on purpose — the page's own "Export CSV"
+        // button (tied to the current filters) is the only one; this pair
+        // was a second, inert copy plus a never-wired "Add expense".
+        secondaryCta: "",
+        primaryCta: "",
       };
     case "Envelopes":
       return {
@@ -62,14 +61,6 @@ export function getPageHead(view: string, ctx: PageHeadContext): PageHead {
             : "Every envelope is on track.",
         secondaryCta: "Import last month",
         primaryCta: "New envelope",
-      };
-    case "Bills":
-      return {
-        sectionLabel: "Recurring",
-        title: "Recurring",
-        subtitle: `${ctx.billsCount} recurring item${ctx.billsCount === 1 ? "" : "s"}, ${money(ctx.billsCommittedCents)} committed this month.`,
-        secondaryCta: "",
-        primaryCta: "Add a bill",
       };
     case "Goals":
       return {

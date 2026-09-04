@@ -842,6 +842,31 @@ details summary {
   background: var(--teal);
 }
 
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 20, 19, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 30;
+}
+.modal-card {
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  border: 1px solid var(--border);
+  box-shadow: 0 16px 48px rgba(20, 20, 19, 0.24);
+  padding: 20px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .envelope-menu-button {
   background: none;
   border: none;
@@ -856,10 +881,14 @@ details summary {
   background: var(--hover);
   color: var(--ink);
 }
+/* position: fixed (not absolute), positioned inline from the ⋮ button's
+   getBoundingClientRect() — .row-list clips overflow for its rounded
+   corners, and an absolutely-positioned dropdown was clipped by that same
+   ancestor whenever its row was near the bottom of a (often short)
+   section, which made the menu invisible below the fold. Same fix as
+   .flag-menu in TransactionsPage. */
 .envelope-menu-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
+  position: fixed;
   width: 260px;
   background: var(--surface);
   border: 1px solid var(--border);

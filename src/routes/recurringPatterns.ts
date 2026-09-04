@@ -2,13 +2,40 @@ import { Hono } from "hono";
 import { requireParam } from "../lib/http";
 import type { Env } from "../types";
 import { createCategory, createEnvelopeForCategory } from "../db/categories";
+import type { RecurringPatternFrequency } from "../types";
 import {
   confirmRecurringPattern,
   createConfirmedRecurringPattern,
   detectRecurringPatterns,
   dismissRecurringPattern,
   listRecurringPatterns,
+  updateRecurringPattern,
 } from "../db/recurringPatterns";
+
+const FREQUENCIES = new Set<RecurringPatternFrequency>(["weekly", "semimonthly", "monthly"]);
+
+function validateSchedule(body: {
+  frequency?: string;
+  dayOfMonth?: number;
+  dayOfMonth2?: number;
+  dayOfWeek?: number;
+}): { error: string } | { frequency: RecurringPatternFrequency } {
+  const frequency = (body.frequency ?? "monthly") as RecurringPatternFrequency;
+  if (!FREQUENCIES.has(frequency)) return { error: "frequency must be 'weekly', 'semimonthly', or 'monthly'" };
+  if (frequency === "weekly") {
+    if (!Number.isInteger(body.dayOfWeek) || body.dayOfWeek! < 0 || body.dayOfWeek! > 6) {
+      return { error: "dayOfWeek must be an integer between 0 (Sunday) and 6 (Saturday) for a weekly pattern" };
+    }
+  } else {
+    if (!Number.isInteger(body.dayOfMonth) || body.dayOfMonth! < 1 || body.dayOfMonth! > 31) {
+      return { error: "dayOfMonth must be an integer between 1 and 31" };
+    }
+    if (frequency === "semimonthly" && (!Number.isInteger(body.dayOfMonth2) || body.dayOfMonth2! < 1 || body.dayOfMonth2! > 31)) {
+      return { error: "dayOfMonth2 must be an integer between 1 and 31 for a semimonthly pattern" };
+    }
+  }
+  return { frequency };
+}
 
 export const recurringPatternsRoute = new Hono<{ Bindings: Env }>();
 
@@ -29,7 +56,10 @@ recurringPatternsRoute.post("/", async (c) => {
   const body = await c.req.json<{
     merchantPattern?: string;
     kind?: "expense" | "income";
+    frequency?: string;
     dayOfMonth?: number;
+    dayOfMonth2?: number;
+    dayOfWeek?: number;
     dayTolerance?: number;
     categoryId?: string;
     newCategoryName?: string;
@@ -38,9 +68,8 @@ recurringPatternsRoute.post("/", async (c) => {
 
   if (!body.merchantPattern?.trim()) return c.json({ error: "merchantPattern is required" }, 400);
   if (body.kind !== "expense" && body.kind !== "income") return c.json({ error: "kind must be 'expense' or 'income'" }, 400);
-  if (!Number.isInteger(body.dayOfMonth) || body.dayOfMonth! < 1 || body.dayOfMonth! > 31) {
-    return c.json({ error: "dayOfMonth must be an integer between 1 and 31" }, 400);
-  }
+  const schedule = validateSchedule(body);
+  if ("error" in schedule) return c.json({ error: schedule.error }, 400);
 
   let categoryId = body.categoryId;
   if (!categoryId) {
@@ -56,7 +85,10 @@ recurringPatternsRoute.post("/", async (c) => {
     categoryId,
     merchantPattern: body.merchantPattern,
     kind: body.kind,
-    dayOfMonth: body.dayOfMonth!,
+    frequency: schedule.frequency,
+    dayOfMonth: body.dayOfMonth ?? 1,
+    dayOfMonth2: body.dayOfMonth2,
+    dayOfWeek: body.dayOfWeek,
     dayTolerance: body.dayTolerance,
   });
   return c.json(pattern, 201);
@@ -90,6 +122,38 @@ recurringPatternsRoute.post("/:patternId/confirm", async (c) => {
   }
 
   const pattern = await confirmRecurringPattern(c.env.DB, householdId, requireParam(c, "patternId"), categoryId);
+  return c.json(pattern);
+});
+
+// The Spending Plan Bills row's edit modal ("Link Transaction" + "Frequency
+// and date") — re-points an already-confirmed pattern's merchant match
+// and/or schedule. All fields optional; only what's provided changes.
+recurringPatternsRoute.patch("/:patternId", async (c) => {
+  const body = await c.req.json<{
+    merchantPattern?: string;
+    frequency?: string;
+    dayOfMonth?: number;
+    dayOfMonth2?: number;
+    dayOfWeek?: number;
+    dayTolerance?: number;
+  }>();
+
+  if (body.merchantPattern !== undefined && !body.merchantPattern.trim()) {
+    return c.json({ error: "merchantPattern cannot be blank" }, 400);
+  }
+  if (body.frequency !== undefined) {
+    const schedule = validateSchedule(body);
+    if ("error" in schedule) return c.json({ error: schedule.error }, 400);
+  }
+
+  const pattern = await updateRecurringPattern(c.env.DB, requireParam(c, "householdId"), requireParam(c, "patternId"), {
+    merchantPattern: body.merchantPattern,
+    frequency: body.frequency as RecurringPatternFrequency | undefined,
+    dayOfMonth: body.dayOfMonth,
+    dayOfMonth2: body.dayOfMonth2,
+    dayOfWeek: body.dayOfWeek,
+    dayTolerance: body.dayTolerance,
+  });
   return c.json(pattern);
 });
 

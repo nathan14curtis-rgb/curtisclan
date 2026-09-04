@@ -1,5 +1,5 @@
 import { newId } from "../lib/id";
-import type { RecurringPattern, RecurringPatternKind, RecurringPatternStatus } from "../types";
+import type { RecurringPattern, RecurringPatternFrequency, RecurringPatternKind, RecurringPatternStatus } from "../types";
 import { nowIso } from "./client";
 
 const MIN_OCCURRENCES = 2;
@@ -27,6 +27,13 @@ export async function listRecurringPatterns(
 
 function dayOfMonth(postedAt: string): number {
   return Number(postedAt.slice(8, 10));
+}
+
+/** 0=Sunday..6=Saturday, for weekly-frequency matching. postedAt is an ISO
+ * date ('YYYY-MM-DD'); Date.parse on a bare date is UTC, which is fine
+ * here since only the day-of-week within that date matters. */
+function dayOfWeek(postedAt: string): number {
+  return new Date(`${postedAt}T00:00:00Z`).getUTCDay();
 }
 
 function monthKey(postedAt: string): string {
@@ -119,7 +126,10 @@ export async function detectRecurringPatterns(db: D1Database, householdId: strin
       category_id: null,
       merchant_pattern: merchant,
       kind: group.kind,
+      frequency: "monthly",
       day_of_month: medianDay,
+      day_of_month_2: null,
+      day_of_week: null,
       day_tolerance: DEFAULT_DAY_TOLERANCE,
       status: "suggested",
       sample_count: group.rows.length,
@@ -136,28 +146,43 @@ export async function detectRecurringPatterns(db: D1Database, householdId: strin
  * category, so it's created straight into 'confirmed' rather than going
  * through the detector's 'suggested' stage first.
  */
+export interface RecurringPatternScheduleInput {
+  frequency?: RecurringPatternFrequency;
+  dayOfMonth: number; // still required (and used) for 'monthly'/'semimonthly'; ignored for 'weekly'
+  dayOfMonth2?: number | null; // 'semimonthly' only
+  dayOfWeek?: number | null; // 'weekly' only, 0-6
+  dayTolerance?: number;
+}
+
 export async function createConfirmedRecurringPattern(
   db: D1Database,
   householdId: string,
-  input: { categoryId: string; merchantPattern: string; kind: RecurringPatternKind; dayOfMonth: number; dayTolerance?: number },
+  input: { categoryId: string; merchantPattern: string; kind: RecurringPatternKind } & RecurringPatternScheduleInput,
 ): Promise<RecurringPattern> {
   const id = newId("rpat");
   const now = nowIso();
+  const frequency = input.frequency ?? "monthly";
   const dayTolerance = input.dayTolerance ?? DEFAULT_DAY_TOLERANCE;
+  const dayOfMonth2 = frequency === "semimonthly" ? (input.dayOfMonth2 ?? null) : null;
+  const dayOfWeek = frequency === "weekly" ? (input.dayOfWeek ?? null) : null;
+  const merchantPattern = input.merchantPattern.trim().toUpperCase();
   await db
     .prepare(
-      `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, day_of_month, day_tolerance, status, sample_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'confirmed', 0, ?, ?)`,
+      `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, frequency, day_of_month, day_of_month_2, day_of_week, day_tolerance, status, sample_count, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 0, ?, ?)`,
     )
-    .bind(id, householdId, input.categoryId, input.merchantPattern.trim().toUpperCase(), input.kind, input.dayOfMonth, dayTolerance, now, now)
+    .bind(id, householdId, input.categoryId, merchantPattern, input.kind, frequency, input.dayOfMonth, dayOfMonth2, dayOfWeek, dayTolerance, now, now)
     .run();
   return {
     id,
     household_id: householdId,
     category_id: input.categoryId,
-    merchant_pattern: input.merchantPattern.trim().toUpperCase(),
+    merchant_pattern: merchantPattern,
     kind: input.kind,
+    frequency,
     day_of_month: input.dayOfMonth,
+    day_of_month_2: dayOfMonth2,
+    day_of_week: dayOfWeek,
     day_tolerance: dayTolerance,
     status: "confirmed",
     sample_count: 0,
@@ -177,6 +202,41 @@ export async function confirmRecurringPattern(db: D1Database, householdId: strin
   return pattern;
 }
 
+/**
+ * The Spending Plan Bills row's edit modal — re-point which merchant it
+ * matches and/or its schedule, on an already-confirmed pattern. Category
+ * is not editable here (that's "Edit expense series" — renaming the
+ * category itself); this only ever touches the matching rule.
+ */
+export async function updateRecurringPattern(
+  db: D1Database,
+  householdId: string,
+  id: string,
+  input: { merchantPattern?: string } & Partial<RecurringPatternScheduleInput>,
+): Promise<RecurringPattern> {
+  const existing = await db.prepare(`SELECT * FROM recurring_pattern WHERE id = ? AND household_id = ?`).bind(id, householdId).first<RecurringPattern>();
+  if (!existing) throw new Error(`recurring_pattern ${id} not found`);
+
+  const frequency = input.frequency ?? existing.frequency;
+  const dayOfMonth = input.dayOfMonth ?? existing.day_of_month;
+  const dayOfMonth2 = frequency === "semimonthly" ? (input.dayOfMonth2 ?? existing.day_of_month_2) : null;
+  const dayOfWeek = frequency === "weekly" ? (input.dayOfWeek ?? existing.day_of_week) : null;
+  const dayTolerance = input.dayTolerance ?? existing.day_tolerance;
+  const merchantPattern = input.merchantPattern ? input.merchantPattern.trim().toUpperCase() : existing.merchant_pattern;
+  const now = nowIso();
+
+  await db
+    .prepare(
+      `UPDATE recurring_pattern
+         SET merchant_pattern = ?, frequency = ?, day_of_month = ?, day_of_month_2 = ?, day_of_week = ?, day_tolerance = ?, updated_at = ?
+         WHERE id = ? AND household_id = ?`,
+    )
+    .bind(merchantPattern, frequency, dayOfMonth, dayOfMonth2, dayOfWeek, dayTolerance, now, id, householdId)
+    .run();
+
+  return { ...existing, merchant_pattern: merchantPattern, frequency, day_of_month: dayOfMonth, day_of_month_2: dayOfMonth2, day_of_week: dayOfWeek, day_tolerance: dayTolerance, updated_at: now };
+}
+
 export async function dismissRecurringPattern(db: D1Database, householdId: string, id: string): Promise<void> {
   await db
     .prepare(`UPDATE recurring_pattern SET status = 'dismissed', updated_at = ? WHERE id = ? AND household_id = ?`)
@@ -191,17 +251,34 @@ export async function dismissRecurringPattern(db: D1Database, householdId: strin
  * a confirmed recurring pattern is a stronger, human-approved signal than
  * anything the cascade would otherwise produce for that merchant.
  */
+/** Whether txn's posted date falls on schedule for a confirmed pattern,
+ * dispatched on frequency: 'monthly' checks day_of_month, 'semimonthly'
+ * checks either of its two days, 'weekly' checks the weekday exactly (day
+ * counts don't apply across week boundaries the way they do within a
+ * month, so day_tolerance is ignored for weekly rows). */
+function onSchedule(pattern: RecurringPattern, postedAt: string): boolean {
+  if (pattern.frequency === "weekly") {
+    return pattern.day_of_week !== null && dayOfWeek(postedAt) === pattern.day_of_week;
+  }
+  const day = dayOfMonth(postedAt);
+  if (pattern.frequency === "semimonthly") {
+    const matchesFirst = dayDistance(day, pattern.day_of_month) <= pattern.day_tolerance;
+    const matchesSecond = pattern.day_of_month_2 !== null && dayDistance(day, pattern.day_of_month_2) <= pattern.day_tolerance;
+    return matchesFirst || matchesSecond;
+  }
+  return dayDistance(day, pattern.day_of_month) <= pattern.day_tolerance;
+}
+
 export async function matchRecurringPattern(db: D1Database, householdId: string, txn: DetectableTransaction): Promise<string | null> {
   if (txn.amount_cents === 0) return null;
   const kind: RecurringPatternKind = txn.amount_cents < 0 ? "expense" : "income";
   const key = merchantKey(txn);
-  const day = dayOfMonth(txn.posted_at);
 
   const { results } = await db
     .prepare(`SELECT * FROM recurring_pattern WHERE household_id = ? AND status = 'confirmed' AND kind = ? AND category_id IS NOT NULL`)
     .bind(householdId, kind)
     .all<RecurringPattern>();
 
-  const match = results.find((p) => key.includes(p.merchant_pattern) && dayDistance(day, p.day_of_month) <= p.day_tolerance);
+  const match = results.find((p) => key.includes(p.merchant_pattern) && onSchedule(p, txn.posted_at));
   return match?.category_id ?? null;
 }
