@@ -14,6 +14,7 @@ export type AccessLevel = "full" | "limited" | "view_only";
 export type RecurringPatternKind = "expense" | "income";
 export type RecurringPatternStatus = "suggested" | "confirmed" | "dismissed";
 export type RecurringPatternFrequency = "weekly" | "semimonthly" | "monthly";
+export type SeriesOccurrenceStatus = "upcoming" | "matched" | "skipped";
 export type AssetType = "property" | "vehicle" | "appliance" | "other";
 export type DocumentCategory = "insurance" | "warranty" | "identification" | "passwords";
 
@@ -96,8 +97,50 @@ export interface RecurringPattern {
   day_tolerance: number;
   status: RecurringPatternStatus;
   sample_count: number;
+  // What this series is expected to cost (expense) or pay (income), so a
+  // projected occurrence has an amount before anything has posted. Null
+  // until seeded from matched history or set by hand.
+  expected_amount_cents: number | null;
+  // Set when the series is over (a cancelled subscription, a job change):
+  // history stays matched, nothing new is projected past this date.
+  ended_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+/** One materialized occurrence of a confirmed recurring_pattern — the
+ * 4th's paycheck and the 20th's are separate rows, so one of them can
+ * carry a different amount or be skipped without touching the series
+ * (migrations/0010, src/envelopes/occurrences.ts). */
+export interface SeriesOccurrence {
+  id: string;
+  household_id: string;
+  pattern_id: string;
+  month: string; // 'YYYY-MM'
+  // What the schedule produced, never edited — regeneration keys off this,
+  // so moving an occurrence doesn't leave a hole that gets refilled with a
+  // duplicate at the original date.
+  scheduled_date: string;
+  due_date: string; // ISO date it is actually expected; starts equal to scheduled_date
+  amount_cents: number | null;
+  // A one-month change ("the water bill is $240 this month"), which
+  // survives regeneration and never edits the series.
+  amount_override_cents: number | null;
+  status: SeriesOccurrenceStatus;
+  matched_transaction_id: string | null;
+  // A transaction explicitly unlinked from this occurrence, so the next
+  // reconcile doesn't simply re-match the pair.
+  unlinked_transaction_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Tag {
+  id: string;
+  household_id: string;
+  name: string;
+  color: string | null;
+  created_at: string;
 }
 
 export interface Category {

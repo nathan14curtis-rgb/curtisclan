@@ -45,39 +45,44 @@ modal.
 
 ### Phase 1 — Data model (migration `0010`)
 
-- [ ] `tag` table: `id`, `household_id`, `name`, `color`, `created_at`;
+- [x] `tag` table: `id`, `household_id`, `name`, `color`, `created_at`;
       unique on `(household_id, name)`.
-- [ ] `transaction_tag` join table: `transaction_id`, `tag_id`, PK on both.
-- [ ] `series_occurrence` table — one row per projected occurrence of a
+- [x] `transaction_tag` join table: `transaction_id`, `tag_id`, PK on both.
+- [x] `series_occurrence` table — one row per projected occurrence of a
       confirmed `recurring_pattern`, materialized so a single occurrence can
       be edited or skipped without touching the series:
-      `id`, `household_id`, `pattern_id`, `month` (`YYYY-MM`), `due_date`,
+      `id`, `household_id`, `pattern_id`, `month` (`YYYY-MM`),
+      `scheduled_date` (what the schedule produced, never edited — what
+      regeneration keys off, so a moved occurrence isn't refilled with a
+      duplicate), `due_date`,
       `amount_cents` (projected; nullable → fall back to the series
       average), `amount_override_cents` (this month only), `status`
       (`upcoming` | `matched` | `skipped`), `matched_transaction_id`
-      (nullable FK), `created_at`, `updated_at`.
-      Unique on `(pattern_id, due_date)` so regeneration is idempotent.
-- [ ] `recurring_pattern`: add `expected_amount_cents` (the series' default
+      (nullable FK), `unlinked_transaction_id` (a pair a person pulled
+      apart by hand, so reconcile doesn't put it back), `created_at`,
+      `updated_at`. Unique on `(pattern_id, scheduled_date)` so
+      regeneration is idempotent.
+- [x] `recurring_pattern`: add `expected_amount_cents` (the series' default
       amount, seeded from the median of matched history) and `ended_at`
       (so a series can be ended without being dismissed).
-- [ ] Types in `src/types.ts` + `dashboard/src/api.ts` kept in step.
+- [x] Types in `src/types.ts` + `dashboard/src/api.ts` kept in step.
 
 ### Phase 2 — Projection engine (`src/envelopes/occurrences.ts`)
 
-- [ ] `generateOccurrences(db, householdId, month)` — walk every confirmed,
+- [x] `generateOccurrences(db, householdId, month)` — walk every confirmed,
       un-ended pattern, expand its schedule across the month (monthly → one
       date; semimonthly → two; weekly → every matching weekday), and upsert
       a `series_occurrence` per due date. Idempotent: re-running never
       duplicates, never clobbers an override or a `skipped` status.
-- [ ] `reconcileOccurrences(db, householdId, month)` — match posted
+- [x] `reconcileOccurrences(db, householdId, month)` — match posted
       transactions to occurrences (same category, nearest due date within
       `day_tolerance`, unmatched-first), setting `status = 'matched'` and
       `matched_transaction_id`. Runs after Plaid sync (`src/plaid/sync.ts`)
       and on demand.
-- [ ] Amount resolution order: `amount_override_cents` →
+- [x] Amount resolution order: `amount_override_cents` →
       `series_occurrence.amount_cents` → `pattern.expected_amount_cents` →
       median of the last 3 matched transactions.
-- [ ] Unit tests in `test/` for: month boundaries (a 31st-day bill in
+- [x] Unit tests in `test/seriesOccurrences.test.ts` for: month boundaries (a 31st-day bill in
       February), semimonthly and weekly expansion, idempotent regeneration,
       matching preferring the nearest unmatched occurrence, and skip
       surviving regeneration.

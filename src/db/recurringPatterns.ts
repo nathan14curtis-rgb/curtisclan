@@ -48,6 +48,16 @@ function dayDistance(a: number, b: number, monthLength = 30): number {
   return Math.min(diff, monthLength - diff);
 }
 
+/** Median magnitude of a group's amounts, in cents — a series' expected
+ * amount is the middle of what it has actually charged, not the mean,
+ * so one anomalous month doesn't drag the projection with it. Always
+ * positive: sign is the pattern's `kind`, not the amount's. */
+function medianAmountCents(rows: { amount_cents: number }[]): number | null {
+  if (rows.length === 0) return null;
+  const magnitudes = rows.map((r) => Math.abs(r.amount_cents)).sort((a, b) => a - b);
+  return magnitudes[Math.floor(magnitudes.length / 2)]!;
+}
+
 interface DetectableTransaction {
   normalized_merchant: string | null;
   raw_description: string;
@@ -113,12 +123,16 @@ export async function detectRecurringPatterns(db: D1Database, householdId: strin
 
     const id = newId("rpat");
     const merchant = key.slice(0, key.lastIndexOf("::"));
+    // Seed the projected amount from the history that proved this is a
+    // series in the first place, so an occurrence has a figure to show
+    // before the next one posts (src/envelopes/occurrences.ts).
+    const expectedAmountCents = medianAmountCents(group.rows);
     await db
       .prepare(
-        `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, day_of_month, day_tolerance, status, sample_count, created_at, updated_at)
-           VALUES (?, ?, NULL, ?, ?, ?, ?, 'suggested', ?, ?, ?)`,
+        `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, day_of_month, day_tolerance, status, sample_count, expected_amount_cents, created_at, updated_at)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, 'suggested', ?, ?, ?, ?)`,
       )
-      .bind(id, householdId, merchant, group.kind, medianDay, DEFAULT_DAY_TOLERANCE, group.rows.length, now, now)
+      .bind(id, householdId, merchant, group.kind, medianDay, DEFAULT_DAY_TOLERANCE, group.rows.length, expectedAmountCents, now, now)
       .run();
     created.push({
       id,
@@ -133,6 +147,8 @@ export async function detectRecurringPatterns(db: D1Database, householdId: strin
       day_tolerance: DEFAULT_DAY_TOLERANCE,
       status: "suggested",
       sample_count: group.rows.length,
+      expected_amount_cents: expectedAmountCents,
+      ended_at: null,
       created_at: now,
       updated_at: now,
     });
@@ -157,21 +173,22 @@ export interface RecurringPatternScheduleInput {
 export async function createConfirmedRecurringPattern(
   db: D1Database,
   householdId: string,
-  input: { categoryId: string; merchantPattern: string; kind: RecurringPatternKind } & RecurringPatternScheduleInput,
+  input: { categoryId: string; merchantPattern: string; kind: RecurringPatternKind; expectedAmountCents?: number | null } & RecurringPatternScheduleInput,
 ): Promise<RecurringPattern> {
   const id = newId("rpat");
   const now = nowIso();
   const frequency = input.frequency ?? "monthly";
+  const expectedAmountCents = input.expectedAmountCents ?? null;
   const dayTolerance = input.dayTolerance ?? DEFAULT_DAY_TOLERANCE;
   const dayOfMonth2 = frequency === "semimonthly" ? (input.dayOfMonth2 ?? null) : null;
   const dayOfWeek = frequency === "weekly" ? (input.dayOfWeek ?? null) : null;
   const merchantPattern = input.merchantPattern.trim().toUpperCase();
   await db
     .prepare(
-      `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, frequency, day_of_month, day_of_month_2, day_of_week, day_tolerance, status, sample_count, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 0, ?, ?)`,
+      `INSERT INTO recurring_pattern (id, household_id, category_id, merchant_pattern, kind, frequency, day_of_month, day_of_month_2, day_of_week, day_tolerance, status, sample_count, expected_amount_cents, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 0, ?, ?, ?)`,
     )
-    .bind(id, householdId, input.categoryId, merchantPattern, input.kind, frequency, input.dayOfMonth, dayOfMonth2, dayOfWeek, dayTolerance, now, now)
+    .bind(id, householdId, input.categoryId, merchantPattern, input.kind, frequency, input.dayOfMonth, dayOfMonth2, dayOfWeek, dayTolerance, expectedAmountCents, now, now)
     .run();
   return {
     id,
@@ -186,6 +203,8 @@ export async function createConfirmedRecurringPattern(
     day_tolerance: dayTolerance,
     status: "confirmed",
     sample_count: 0,
+    expected_amount_cents: expectedAmountCents,
+    ended_at: null,
     created_at: now,
     updated_at: now,
   };
@@ -203,16 +222,22 @@ export async function confirmRecurringPattern(db: D1Database, householdId: strin
 }
 
 /**
- * The Spending Plan Bills row's edit modal — re-point which merchant it
- * matches and/or its schedule, on an already-confirmed pattern. Category
- * is not editable here (that's "Edit expense series" — renaming the
- * category itself); this only ever touches the matching rule.
+ * Editing a series: which merchant it matches, its schedule, what it's
+ * expected to cost, which category it files under, and whether it has
+ * ended. Ending a series is deliberately not the same as dismissing a
+ * suggestion — matched history stays on the plan, only future projection
+ * stops (src/envelopes/occurrences.ts skips ended patterns).
  */
 export async function updateRecurringPattern(
   db: D1Database,
   householdId: string,
   id: string,
-  input: { merchantPattern?: string } & Partial<RecurringPatternScheduleInput>,
+  input: {
+    merchantPattern?: string;
+    categoryId?: string;
+    expectedAmountCents?: number | null;
+    endedAt?: string | null;
+  } & Partial<RecurringPatternScheduleInput>,
 ): Promise<RecurringPattern> {
   const existing = await db.prepare(`SELECT * FROM recurring_pattern WHERE id = ? AND household_id = ?`).bind(id, householdId).first<RecurringPattern>();
   if (!existing) throw new Error(`recurring_pattern ${id} not found`);
@@ -223,18 +248,37 @@ export async function updateRecurringPattern(
   const dayOfWeek = frequency === "weekly" ? (input.dayOfWeek ?? existing.day_of_week) : null;
   const dayTolerance = input.dayTolerance ?? existing.day_tolerance;
   const merchantPattern = input.merchantPattern ? input.merchantPattern.trim().toUpperCase() : existing.merchant_pattern;
+  const categoryId = input.categoryId ?? existing.category_id;
+  // "expectedAmountCents": null clears the figure (fall back to matched
+  // history); omitted leaves it alone. Same for endedAt, where null is
+  // how a series is un-ended.
+  const expectedAmountCents = "expectedAmountCents" in input ? (input.expectedAmountCents ?? null) : existing.expected_amount_cents;
+  const endedAt = "endedAt" in input ? (input.endedAt ?? null) : existing.ended_at;
   const now = nowIso();
 
   await db
     .prepare(
       `UPDATE recurring_pattern
-         SET merchant_pattern = ?, frequency = ?, day_of_month = ?, day_of_month_2 = ?, day_of_week = ?, day_tolerance = ?, updated_at = ?
+         SET merchant_pattern = ?, category_id = ?, frequency = ?, day_of_month = ?, day_of_month_2 = ?, day_of_week = ?, day_tolerance = ?,
+             expected_amount_cents = ?, ended_at = ?, updated_at = ?
          WHERE id = ? AND household_id = ?`,
     )
-    .bind(merchantPattern, frequency, dayOfMonth, dayOfMonth2, dayOfWeek, dayTolerance, now, id, householdId)
+    .bind(merchantPattern, categoryId, frequency, dayOfMonth, dayOfMonth2, dayOfWeek, dayTolerance, expectedAmountCents, endedAt, now, id, householdId)
     .run();
 
-  return { ...existing, merchant_pattern: merchantPattern, frequency, day_of_month: dayOfMonth, day_of_month_2: dayOfMonth2, day_of_week: dayOfWeek, day_tolerance: dayTolerance, updated_at: now };
+  return {
+    ...existing,
+    merchant_pattern: merchantPattern,
+    category_id: categoryId,
+    frequency,
+    day_of_month: dayOfMonth,
+    day_of_month_2: dayOfMonth2,
+    day_of_week: dayOfWeek,
+    day_tolerance: dayTolerance,
+    expected_amount_cents: expectedAmountCents,
+    ended_at: endedAt,
+    updated_at: now,
+  };
 }
 
 export async function dismissRecurringPattern(db: D1Database, householdId: string, id: string): Promise<void> {
