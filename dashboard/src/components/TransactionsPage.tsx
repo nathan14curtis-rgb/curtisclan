@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { api, type Account, type Category, type Transaction, type TransactionFlagColor, type User, type VerifyState } from "../api";
 import { dayLabel, formatCents } from "../format";
-import { CheckIcon } from "./icons/CheckIcon";
 import { PencilIcon } from "./icons/PencilIcon";
+import { TransactionDetailModal } from "./TransactionDetailModal";
 import { RobotIcon } from "./icons/RobotIcon";
 
 const FLAG_COLORS: TransactionFlagColor[] = ["red", "orange", "yellow", "green", "blue", "purple"];
@@ -87,26 +87,18 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const [quickFilter, setQuickFilter] = useState<QuickFilter>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editError, setEditError] = useState<string | null>(null);
-  const [draftCategoryId, setDraftCategoryId] = useState("");
-  const [draftAmount, setDraftAmount] = useState("");
-  const [draftExcluded, setDraftExcluded] = useState(false);
+  // The pencil opens the shared transaction detail modal rather than
+  // editing in place: the same dialog the Spending Plan uses, so category,
+  // amount, payee, date, account, tags, splits, note, flag and exclusion
+  // are all editable from one place instead of the two fields a row had
+  // space for.
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [flagMenuId, setFlagMenuId] = useState<string | null>(null);
   const [flagMenuPos, setFlagMenuPos] = useState<{ top: number; left: number } | null>(null);
 
   const accountById = useMemo(() => new Map(accounts.map((a) => [a.id, a])), [accounts]);
   const userById = useMemo(() => new Map(users.map((u) => [u.id, u])), [users]);
   const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
-  // Income is selectable here too — a deposit needs somewhere to land
-  // (server-side default: src/categorization/defaultIncomeRule.ts), and a
-  // household member should be able to move it from the generic default
-  // to something more specific (e.g. "Paycheck") by hand.
-  const budgetableCategories = useMemo(
-    () => categories.filter((c) => !c.archived_at && (c.kind === "expense" || c.kind === "savings" || c.kind === "income")),
-    [categories],
-  );
-
   const memberFor = (t: Transaction) => {
     const ownerId = accountById.get(t.account_id)?.owner_user_id;
     return ownerId ? (userById.get(ownerId)?.name ?? "Shared") : "Shared";
@@ -169,58 +161,6 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const outCents = nonTransferFiltered.filter((t) => t.amount_cents < 0).reduce((sum, t) => sum - t.amount_cents, 0);
   const inCents = nonTransferFiltered.filter((t) => t.amount_cents > 0).reduce((sum, t) => sum + t.amount_cents, 0);
   const uncategorizedCount = filtered.filter((t) => !t.category_id && !t.is_transfer).length;
-
-  function startEdit(t: Transaction) {
-    setEditingId(t.id);
-    setEditError(null);
-    setDraftCategoryId(t.category_id ?? "");
-    setDraftAmount((t.amount_cents / 100).toFixed(2));
-    setDraftExcluded(Boolean(t.excluded_from_budget));
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditError(null);
-  }
-
-  async function saveEdit(t: Transaction) {
-    const cents = Math.round(parseFloat(draftAmount) * 100);
-    if (!draftCategoryId) {
-      setEditError("Pick a category first");
-      return;
-    }
-    if (Number.isNaN(cents)) {
-      setEditError("Enter a valid amount");
-      return;
-    }
-    setEditError(null);
-    setBusyId(t.id);
-    setError(null);
-    try {
-      await api.editTransaction(householdId, t.id, {
-        categoryId: draftCategoryId,
-        amountCents: cents,
-        editedByUserId: currentUserId ?? undefined,
-      });
-      if (draftExcluded !== Boolean(t.excluded_from_budget)) {
-        await api.setTransactionExcluded(householdId, t.id, draftExcluded);
-      }
-    } catch (err) {
-      setBusyId(null);
-      setEditError(err instanceof Error ? err.message : "Failed to save");
-      return;
-    }
-    // The save itself succeeded — leave edit mode now rather than waiting
-    // on the list refresh below, so a slow or failed refresh never leaves
-    // the row looking like the save silently did nothing.
-    setEditingId(null);
-    setBusyId(null);
-    try {
-      await onChanged();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Saved, but the list failed to refresh — reload to see it.");
-    }
-  }
 
   function openFlagMenu(transactionId: string, anchor: HTMLElement) {
     if (flagMenuId === transactionId) {
@@ -449,7 +389,6 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
             {group.rows.map((t) => {
               const category = t.category_id ? categoryById.get(t.category_id) : null;
               const mark = VERIFY_MARK[t.verify_state];
-              const isEditing = editingId === t.id;
               const isBusy = busyId === t.id;
               return (
                 <div className={`row-item ${Boolean(t.excluded_from_budget) || Boolean(t.is_transfer) ? "row-item--excluded" : ""}`} key={t.id}>
@@ -488,76 +427,20 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
                   </div>
                   {t.is_transfer ? (
                     <span className="badge">transfer</span>
-                  ) : isEditing ? (
-                    <select
-                      value={draftCategoryId}
-                      disabled={isBusy}
-                      className={!draftCategoryId && editError ? "field-invalid" : ""}
-                      onChange={(e) => {
-                        setDraftCategoryId(e.target.value);
-                        setEditError(null);
-                      }}
-                    >
-                      <option value="" disabled>
-                        Needs review
-                      </option>
-                      {budgetableCategories.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
                   ) : (
                     <span className={`category-chip ${category ? "" : "category-chip--empty"}`}>{category?.name ?? "Needs review"}</span>
                   )}
-                  {isEditing ? (
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="amount-edit-input"
-                      value={draftAmount}
-                      disabled={isBusy}
-                      onChange={(e) => setDraftAmount(e.target.value)}
-                    />
-                  ) : (
-                    <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
-                      {formatCents(t.amount_cents)}
-                    </span>
-                  )}
+                  <span className={`money ${t.amount_cents < 0 ? "" : "positive"}`} style={{ minWidth: 96, textAlign: "right" }}>
+                    {formatCents(t.amount_cents)}
+                  </span>
                   <span className={mark.className} title={mark.label} style={{ flex: "0 0 auto" }}>
                     {mark.content}
                   </span>
-                  {!t.is_transfer &&
-                    (isEditing ? (
-                      <div className="row" style={{ gap: 8, flex: "0 0 auto" }}>
-                        {editError && <span className="inline-error">{editError}</span>}
-                        <label className="row" style={{ gap: 4, fontSize: 12 }} title="Exclude from budget">
-                          <input
-                            type="checkbox"
-                            checked={draftExcluded}
-                            disabled={isBusy}
-                            onChange={(e) => setDraftExcluded(e.target.checked)}
-                          />
-                          Exclude
-                        </label>
-                        <button type="button" className="row-edit-btn" title="Cancel" onClick={cancelEdit} disabled={isBusy}>
-                          ×
-                        </button>
-                        <button
-                          type="button"
-                          className="row-edit-btn row-edit-btn--save"
-                          title="Save"
-                          disabled={isBusy}
-                          onClick={() => saveEdit(t)}
-                        >
-                          <CheckIcon size={14} color="#ffffff" />
-                        </button>
-                      </div>
-                    ) : (
-                      <button type="button" className="row-edit-btn" title="Edit" onClick={() => startEdit(t)}>
-                        <PencilIcon size={14} />
-                      </button>
-                    ))}
+                  {!t.is_transfer && (
+                    <button type="button" className="row-edit-btn" title="Edit" disabled={isBusy} onClick={() => setEditingTransaction(t)}>
+                      <PencilIcon size={14} />
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -567,6 +450,18 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
       {filtered.length === 0 && <p className="hint">No transactions match.</p>}
 
       {error && <p className="error">{error}</p>}
+
+      {editingTransaction && (
+        <TransactionDetailModal
+          householdId={householdId}
+          transaction={editingTransaction}
+          accounts={accounts}
+          categories={categories}
+          currentUserId={currentUserId}
+          onClose={() => setEditingTransaction(null)}
+          onSaved={onChanged}
+        />
+      )}
     </div>
   );
 }

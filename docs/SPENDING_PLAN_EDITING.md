@@ -112,13 +112,13 @@ modal.
 
 ### Phase 4 — Shared transaction detail modal
 
-- [ ] Extract `dashboard/src/components/TransactionDetailModal.tsx`: payee,
+- [x] Extract `dashboard/src/components/TransactionDetailModal.tsx`: payee,
       date, amount, account, status, category, tags, split, note, flag,
       reviewed, exclude-from-plan, linked-series card (with unlink / view
       series / edit series), Create Rule, Delete.
-- [ ] `TransactionsPage.tsx` pencil opens it (replacing inline editing).
+- [x] `TransactionsPage.tsx` pencil opens it (replacing inline editing).
 - [ ] Every Spending Plan row opens the same component, so a fix lands once.
-- [ ] Works for an unmatched projected occurrence too: the same modal in a
+- [x] Works for an unmatched projected occurrence too: the same modal in a
       reduced form (amount override, due date, skip), since there is no
       transaction to edit yet.
 
