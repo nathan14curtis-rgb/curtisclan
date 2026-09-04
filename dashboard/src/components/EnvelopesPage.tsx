@@ -34,6 +34,19 @@ const DAY_SUFFIX = (day: number) => {
 
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+/** A write that touches recurring_pattern's frequency/day_of_month_2/
+ * day_of_week columns 500s on a deployment where migrations/0008 hasn't
+ * been applied yet (`npx wrangler d1 migrations apply curtisclan --remote`)
+ * — surfaced as a specific, actionable message instead of a bare "Failed
+ * to save", the same way the older 0006 migration gap already was for
+ * the bill detector. */
+function describeRecurringPatternError(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.status === 500) {
+    return "The database migration for recurring schedules hasn't been applied on this deployment yet. Run `npx wrangler d1 migrations apply curtisclan --remote`.";
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
 function scheduleLabel(p: Pick<RecurringPattern, "frequency" | "day_of_month" | "day_of_month_2" | "day_of_week">): string {
   if (p.frequency === "weekly") return p.day_of_week !== null ? `Every ${WEEKDAY_NAMES[p.day_of_week]}` : "Weekly";
   if (p.frequency === "semimonthly" && p.day_of_month_2 !== null) {
@@ -457,6 +470,9 @@ function RecurringTransactionPicker({
     setPicked(t);
     setMerchantPattern(t.normalized_merchant ?? t.raw_description);
     setDayOfMonth(String(Number(t.posted_at.slice(8, 10))));
+    if (kind === "expense") {
+      setMonthlyTarget((Math.abs(t.amount_cents) / 100).toFixed(2));
+    }
     if (t.category_id) {
       setCategoryMode("existing");
       setCategoryId(t.category_id);
@@ -917,6 +933,7 @@ function EditEnvelopeModal({
   function pickMerchant(t: Transaction) {
     setMerchantPattern(t.normalized_merchant ?? t.raw_description);
     setMerchantSearch("");
+    setAmount((Math.abs(t.amount_cents) / 100).toFixed(2));
     if (schedule.frequency === "monthly") {
       setSchedule((s) => ({ ...s, dayOfMonth: String(Number(t.posted_at.slice(8, 10))) }));
     }
@@ -948,7 +965,7 @@ function EditEnvelopeModal({
       await onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
+      setError(describeRecurringPatternError(err, "Failed to save"));
     } finally {
       setSaving(false);
     }
@@ -1102,7 +1119,7 @@ function AddIncomeModal({
       await onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add income");
+      setError(describeRecurringPatternError(err, "Failed to add income"));
     } finally {
       setSaving(false);
     }
@@ -1226,13 +1243,7 @@ export function EnvelopesPage({ householdId, accounts, categories, envelopes, en
       await api.detectRecurringPatterns(householdId);
       await refreshPatterns();
     } catch (err) {
-      setDetectError(
-        err instanceof ApiError && err.status === 500
-          ? "The recurring-bill detector isn't set up on this deployment yet — the database migration for it needs to be applied."
-          : err instanceof Error
-            ? err.message
-            : "Failed to look for recurring patterns",
-      );
+      setDetectError(describeRecurringPatternError(err, "Failed to look for recurring patterns"));
     } finally {
       setDetecting(false);
     }
