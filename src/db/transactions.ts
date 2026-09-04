@@ -425,6 +425,109 @@ export async function editTransaction(
   };
 }
 
+export interface UpdateTransactionInput {
+  payee?: string;
+  postedAt?: string;
+  amountCents?: number;
+  accountId?: string;
+  categoryId?: string;
+  memo?: string | null;
+  pending?: boolean;
+  excluded?: boolean;
+  flagColor?: TransactionFlagColor | null;
+  editedByUserId?: string | null;
+}
+
+/**
+ * The transaction detail modal's one save (docs/SPENDING_PLAN_EDITING.md
+ * phase 3): everything the modal shows, written together, so a person who
+ * fixes the payee and the amount and the category doesn't fire three
+ * requests that can half-fail.
+ *
+ * Every field is optional and only what's provided changes — `memo` and
+ * `flagColor` distinguish "omitted" from an explicit null (clearing the
+ * note, clearing the flag), which a plain `??` cannot. A category change
+ * still goes through applyCategorization, so it records an audit row and
+ * teaches merchant memory exactly as a categorize-only call would.
+ */
+export async function updateTransaction(
+  db: D1Database,
+  householdId: string,
+  transactionId: string,
+  input: UpdateTransactionInput,
+): Promise<Transaction> {
+  const existing = await getTransaction(db, householdId, transactionId);
+
+  if (input.categoryId && input.categoryId !== existing.category_id) {
+    await applyCategorization(db, householdId, transactionId, {
+      categoryId: input.categoryId,
+      method: "human",
+      createdByUserId: input.editedByUserId,
+    });
+  }
+
+  // The payee is what a person sees and edits; raw_description stays as
+  // the bank sent it, so renaming a payee never destroys the original
+  // statement text the categorization pipeline and Plaid matching read.
+  const normalizedMerchant = input.payee !== undefined ? input.payee.trim() || null : existing.normalized_merchant;
+  const postedAt = input.postedAt ?? existing.posted_at;
+  const amountCents = input.amountCents ?? existing.amount_cents;
+  const accountId = input.accountId ?? existing.account_id;
+  const memo = "memo" in input ? (input.memo ?? null) : existing.memo;
+  const pending = input.pending !== undefined ? (input.pending ? 1 : 0) : existing.pending;
+  const excluded = input.excluded !== undefined ? (input.excluded ? 1 : 0) : existing.excluded_from_budget;
+  const flagColor = "flagColor" in input ? (input.flagColor ?? null) : existing.flag_color;
+  const now = nowIso();
+
+  // Saving from the modal is an explicit human confirmation of the whole
+  // row, the same as the Transactions page's pencil-edit — so it verifies.
+  const verifiedByUserId = input.editedByUserId ?? existing.verified_by_user_id;
+  const verifiedAt = input.editedByUserId ? now : existing.verified_at;
+
+  const result = await db
+    .prepare(
+      `UPDATE "transaction"
+         SET normalized_merchant = ?, posted_at = ?, amount_cents = ?, account_id = ?, memo = ?, pending = ?,
+             excluded_from_budget = ?, flag_color = ?, verified_by_user_id = ?, verified_at = ?, updated_at = ?
+       WHERE id = ? AND household_id = ?`,
+    )
+    .bind(
+      normalizedMerchant,
+      postedAt,
+      amountCents,
+      accountId,
+      memo,
+      pending,
+      excluded,
+      flagColor,
+      verifiedByUserId,
+      verifiedAt,
+      now,
+      transactionId,
+      householdId,
+    )
+    .run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", transactionId);
+
+  return getTransaction(db, householdId, transactionId);
+}
+
+/**
+ * Delete a transaction outright — the modal's "Delete transaction". Takes
+ * its split children with it (they have no meaning without their parent)
+ * and leaves any series occurrence it was matched to back at 'upcoming'
+ * via the schema's ON DELETE SET NULL, so deleting a mis-imported charge
+ * doesn't silently erase the bill it was standing in for.
+ */
+export async function deleteTransaction(db: D1Database, householdId: string, id: string): Promise<void> {
+  await getTransaction(db, householdId, id); // 404s for another household's row before deleting anything
+  // Children first: split_parent_id is a foreign key, so removing the
+  // parent out from under them would be rejected outright.
+  await db.prepare(`DELETE FROM "transaction" WHERE split_parent_id = ? AND household_id = ?`).bind(id, householdId).run();
+  const result = await db.prepare(`DELETE FROM "transaction" WHERE id = ? AND household_id = ?`).bind(id, householdId).run();
+  if (result.meta.changes === 0) throw new NotFoundError("transaction", id);
+}
+
 /** A purely visual marker a household member sets by hand — never touched
  * by categorization or verification, so it survives both untouched. */
 export async function setTransactionFlag(db: D1Database, householdId: string, id: string, color: TransactionFlagColor | null): Promise<Transaction> {

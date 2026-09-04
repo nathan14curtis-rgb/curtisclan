@@ -89,21 +89,26 @@ modal.
 
 ### Phase 3 — API surface
 
-- [ ] `GET /households/:householdId/occurrences?month=YYYY-MM` — generate,
+- [x] `GET /households/:householdId/occurrences?month=YYYY-MM` — generate,
       reconcile, and return occurrences joined to their pattern, category,
       and matched transaction. This is what the Spending Plan reads.
-- [ ] `PATCH .../occurrences/:occurrenceId` — `amountOverrideCents`,
+- [x] `PATCH .../occurrences/:occurrenceId` — `amountOverrideCents`,
       `dueDate`, `status` (to skip / un-skip).
-- [ ] `POST .../occurrences/:occurrenceId/unlink` — detach the matched
+- [x] `POST .../occurrences/:occurrenceId/unlink` — detach the matched
       transaction, returning the occurrence to `upcoming`.
-- [ ] `PATCH .../recurring-patterns/:patternId` — extend the existing route
+- [x] `PATCH .../recurring-patterns/:patternId` — extend the existing route
       with `expectedAmountCents`, `categoryId`, and `endedAt` (end series).
-- [ ] Tags: `GET/POST .../tags`, `PATCH/DELETE .../tags/:tagId`,
+- [x] Tags: `GET/POST .../tags`, `PATCH/DELETE .../tags/:tagId`,
       `PUT .../transactions/:transactionId/tags` (replace the set).
-- [ ] `PATCH .../transactions/:transactionId` — one consolidated edit
+- [x] `PATCH .../transactions/:transactionId` — one consolidated edit
       covering payee, date, amount, account, category, memo, pending,
       excluded, flag. Today's `/edit` and `/categorize` stay for callers
       that use them.
+- [x] `DELETE .../transactions/:transactionId` — the modal's Delete, which
+      takes split children with it.
+- [x] Reconciliation runs after a Plaid sync (`src/plaid/sync.ts`), so a
+      posted paycheck flips its occurrence to Received without waiting for
+      someone to open the page.
 
 ### Phase 4 — Shared transaction detail modal
 
