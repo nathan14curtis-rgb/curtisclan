@@ -13,6 +13,7 @@ export type RuleSource = "user" | "ai_suggested";
 export type AccessLevel = "full" | "limited" | "view_only";
 export type RecurringPatternKind = "expense" | "income";
 export type RecurringPatternStatus = "suggested" | "confirmed" | "dismissed";
+export type RecurringPatternFrequency = "weekly" | "semimonthly" | "monthly";
 export type AssetType = "property" | "vehicle" | "appliance" | "other";
 export type DocumentCategory = "insurance" | "warranty" | "identification" | "passwords";
 
@@ -84,7 +85,14 @@ export interface RecurringPattern {
   category_id: string | null;
   merchant_pattern: string;
   kind: RecurringPatternKind;
+  frequency: RecurringPatternFrequency;
   day_of_month: number;
+  // Set only when frequency = 'semimonthly' (the pattern's second day of
+  // the month, e.g. the 23rd alongside day_of_month's 8th).
+  day_of_month_2: number | null;
+  // Set only when frequency = 'weekly' (0=Sunday..6=Saturday); day_of_month
+  // is unused (but still stored, see migrations/0008) for weekly rows.
+  day_of_week: number | null;
   day_tolerance: number;
   status: RecurringPatternStatus;
   sample_count: number;

@@ -2,16 +2,16 @@ import { useState } from "react";
 import type { Asset, Household } from "../api";
 import { formatCents } from "../format";
 
-export const BUDGETING_VIEWS = ["Overview", "Transactions", "Envelopes", "Bills", "Goals", "Members"] as const;
+export const BUDGETING_VIEWS = ["Overview", "Transactions", "Envelopes", "Goals", "Members"] as const;
 // Internal view ids (above) stay the same — they're the persisted
 // localStorage value and App.tsx's routing key — only the label shown in
-// the nav changes per the rename: Envelopes -> Spending Plan, Bills ->
-// Recurring (it now covers income too, not just expense bills).
+// the nav changes per the rename: Envelopes -> Spending Plan. The former
+// "Bills"/Recurring tab is gone — its bill list, "Add recurring" wizard,
+// and detector now live inside Spending Plan's Bills section.
 const BUDGETING_LABELS: Record<(typeof BUDGETING_VIEWS)[number], string> = {
   Overview: "Overview",
   Transactions: "Transactions",
   Envelopes: "Spending Plan",
-  Bills: "Recurring",
   Goals: "Goals",
   Members: "Members",
 };

@@ -19,6 +19,34 @@ interface Props {
 
 type VerifyFilter = "all" | "verified" | "unverified";
 type SizeFilter = "all" | "under25" | "25to100" | "over100";
+type DatePreset = "thisMonth" | "lastMonth" | "thisYear" | "allTime";
+
+const DATE_PRESET_LABELS: Record<DatePreset, string> = {
+  thisMonth: "This month",
+  lastMonth: "Last month",
+  thisYear: "This year",
+  allTime: "All time",
+};
+
+function isoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Local-calendar date ranges (not UTC) for the quick filter chips — the
+ * "All time" case is the only one with no bounds. */
+function datePresetRange(preset: DatePreset): { from: string; to: string } {
+  const now = new Date();
+  switch (preset) {
+    case "thisMonth":
+      return { from: isoDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: isoDate(new Date(now.getFullYear(), now.getMonth() + 1, 0)) };
+    case "lastMonth":
+      return { from: isoDate(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: isoDate(new Date(now.getFullYear(), now.getMonth(), 0)) };
+    case "thisYear":
+      return { from: isoDate(new Date(now.getFullYear(), 0, 1)), to: isoDate(new Date(now.getFullYear(), 11, 31)) };
+    case "allTime":
+      return { from: "", to: "" };
+  }
+}
 
 const SIZE_FILTER_RANGES: Record<Exclude<SizeFilter, "all">, (cents: number) => boolean> = {
   under25: (cents) => Math.abs(cents) < 2500,
@@ -52,6 +80,7 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
   const [memberFilter, setMemberFilter] = useState("All");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [datePreset, setDatePreset] = useState<DatePreset | null>("allTime");
   const [merchantQuery, setMerchantQuery] = useState("");
   const [verifyFilter, setVerifyFilter] = useState<VerifyFilter>("all");
   const [sizeFilter, setSizeFilter] = useState<SizeFilter>("all");
@@ -217,6 +246,13 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
     }
   }
 
+  function selectDatePreset(preset: DatePreset) {
+    const range = datePresetRange(preset);
+    setFromDate(range.from);
+    setToDate(range.to);
+    setDatePreset(preset);
+  }
+
   function exportCsv() {
     const header = "Date,Merchant,Account,Category,Amount\n";
     const rows = filtered.map((t) => {
@@ -255,14 +291,44 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
         </button>
       </div>
 
+      <div className="row" style={{ gap: 4 }}>
+        {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((preset) => (
+          <button
+            key={preset}
+            type="button"
+            className={preset === datePreset ? "" : "secondary"}
+            style={{ padding: "8px 14px", fontSize: 13 }}
+            onClick={() => selectDatePreset(preset)}
+          >
+            {DATE_PRESET_LABELS[preset]}
+          </button>
+        ))}
+      </div>
+
       <div className="row" style={{ gap: 12 }}>
         <div className="field" style={{ margin: 0 }}>
           <label htmlFor="tx-filter-from">From</label>
-          <input id="tx-filter-from" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+          <input
+            id="tx-filter-from"
+            type="date"
+            value={fromDate}
+            onChange={(e) => {
+              setFromDate(e.target.value);
+              setDatePreset(null);
+            }}
+          />
         </div>
         <div className="field" style={{ margin: 0 }}>
           <label htmlFor="tx-filter-to">To</label>
-          <input id="tx-filter-to" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          <input
+            id="tx-filter-to"
+            type="date"
+            value={toDate}
+            onChange={(e) => {
+              setToDate(e.target.value);
+              setDatePreset(null);
+            }}
+          />
         </div>
         <div className="field" style={{ margin: 0, flex: "1 1 180px" }}>
           <label htmlFor="tx-filter-merchant">Merchant</label>
@@ -299,6 +365,7 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
             onClick={() => {
               setFromDate("");
               setToDate("");
+              setDatePreset("allTime");
               setMerchantQuery("");
               setVerifyFilter("all");
               setSizeFilter("all");
@@ -385,7 +452,7 @@ export function TransactionsPage({ householdId, currentUserId, users, accounts, 
               const isEditing = editingId === t.id;
               const isBusy = busyId === t.id;
               return (
-                <div className={`row-item ${Boolean(t.excluded_from_budget) ? "row-item--excluded" : ""}`} key={t.id}>
+                <div className={`row-item ${Boolean(t.excluded_from_budget) || Boolean(t.is_transfer) ? "row-item--excluded" : ""}`} key={t.id}>
                   <div style={{ position: "relative", flex: "0 0 auto" }}>
                     <button
                       type="button"

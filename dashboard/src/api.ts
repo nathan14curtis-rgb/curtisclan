@@ -139,6 +139,7 @@ export interface Document {
 
 export type RecurringPatternKind = "expense" | "income";
 export type RecurringPatternStatus = "suggested" | "confirmed" | "dismissed";
+export type RecurringPatternFrequency = "weekly" | "semimonthly" | "monthly";
 
 export interface RecurringPattern {
   id: string;
@@ -146,10 +147,21 @@ export interface RecurringPattern {
   category_id: string | null;
   merchant_pattern: string;
   kind: RecurringPatternKind;
+  frequency: RecurringPatternFrequency;
   day_of_month: number;
+  day_of_month_2: number | null;
+  day_of_week: number | null;
   day_tolerance: number;
   status: RecurringPatternStatus;
   sample_count: number;
+}
+
+export interface RecurringPatternScheduleInput {
+  frequency?: RecurringPatternFrequency;
+  dayOfMonth?: number;
+  dayOfMonth2?: number;
+  dayOfWeek?: number;
+  dayTolerance?: number;
 }
 
 export interface CategorySuggestion {
@@ -355,17 +367,22 @@ export const api = {
     input: {
       merchantPattern: string;
       kind: "expense" | "income";
-      dayOfMonth: number;
-      dayTolerance?: number;
       categoryId?: string;
       newCategoryName?: string;
       monthlyTargetCents?: number;
-    },
+    } & RecurringPatternScheduleInput,
   ) => request<RecurringPattern>(`/households/${householdId}/recurring-patterns`, { method: "POST", body: JSON.stringify(input) }),
+  updateRecurringPattern: (householdId: string, patternId: string, input: { merchantPattern?: string } & RecurringPatternScheduleInput) =>
+    request<RecurringPattern>(`/households/${householdId}/recurring-patterns/${patternId}`, { method: "PATCH", body: JSON.stringify(input) }),
   detectRecurringPatterns: (householdId: string) =>
     request<RecurringPattern[]>(`/households/${householdId}/recurring-patterns/detect`, { method: "POST" }),
   confirmRecurringPattern: (householdId: string, patternId: string, input: { categoryId?: string; newCategoryName?: string; kind?: "expense" | "income" }) =>
     request<RecurringPattern>(`/households/${householdId}/recurring-patterns/${patternId}/confirm`, { method: "POST", body: JSON.stringify(input) }),
   dismissRecurringPattern: (householdId: string, patternId: string) =>
     request<{ ok: true }>(`/households/${householdId}/recurring-patterns/${patternId}/dismiss`, { method: "POST" }),
+
+  createTransaction: (
+    householdId: string,
+    input: { accountId: string; postedAt: string; amountCents: number; description: string; categoryId: string; memo?: string; createdByUserId?: string },
+  ) => request<Transaction>(`/households/${householdId}/transactions`, { method: "POST", body: JSON.stringify(input) }),
 };
