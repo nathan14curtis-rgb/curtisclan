@@ -1,8 +1,48 @@
 # Home Base
 
-Self-owned budgeting app on Cloudflare Workers, fed by Plaid, with an
-iMessage loop that asks what a charge was and understands the answer in
-plain English. Full design in [`docs/PLAN.md`](docs/PLAN.md).
+Self-owned budgeting app on Cloudflare Workers, fed by Plaid, with a
+conversational iMessage bot: ask it anything about your money in plain
+English, and tell it what to change — categories, monthly targets, goals,
+what a charge really was — and it writes the change. Full design in
+[`docs/PLAN.md`](docs/PLAN.md).
+
+## How the bot works
+
+**It pulls hourly.** Every hour, `/transactions/sync` runs for every linked
+Plaid item (`0 * * * *` in `wrangler.jsonc`). Plaid's webhook still fires a
+sync the moment a charge lands; the hourly pass is the floor that makes a
+dropped webhook cost an hour instead of a day.
+
+**It only brings up the period it just looked at.** Two windows, and
+nothing else is raised unprompted:
+
+| What | Window | Message |
+| --- | --- | --- |
+| Charges it couldn't categorize | the last hour | one batched text per hour: "2 new charges I couldn't place…" (`src/messaging/hourlyCheckin.ts`) |
+| Charges it filed automatically | the last 24 hours | the morning digest at 13:00 UTC (`src/messaging/dailyDigest.ts`) |
+
+Anything older stays in the dashboard's review queue rather than becoming a
+text about a charge nobody remembers. Overnight, quiet hours defer the
+whole batch to the morning instead of sending at 2am.
+
+**Every reply is a conversation, not a command.** There is no `fix
+<merchant>` syntax and no separate Q&A mode. An inbound text becomes one
+turn of an ongoing thread (`src/messaging/agent.ts`), answered by Claude
+with tools that read and write the household's real data
+(`src/messaging/agentTools.ts`):
+
+- *"the costco run was groceries, the other one was a gift"* → both filed,
+  the merchant learned, confirmation texted back
+- *"how much is left on dining?"* / *"where did the money go in June?"* →
+  read from the actual ledger, never estimated
+- *"bump groceries to $900"*, *"move $50 from dining to gas"*, *"start a
+  $4,000 vacation fund by next June"*, *"always file Maverik as gas"* →
+  written, then confirmed with the number that matters now
+
+Both sides of every exchange are stored, so follow-ups work ("what about
+last month?"). The same agent and the same thread are available in the
+dashboard under **Ask the bot**, and over the API at
+`POST /api/households/:householdId/chat`.
 
 Thank you for using! Please email nathan14curtis@gmail.com with suggestions for UX changes and improvements.
 
@@ -222,11 +262,16 @@ top-down:
 - **`unprocessed` is non-zero** — the text was queued but never finished.
   Check the Worker logs for `[queue] resolve_reply`.
 - **`config.anthropicApiKeySet` is false** — replies are received but
-  can't be matched to a charge; the bot texts back saying so.
+  nothing can answer them; the bot texts back saying so. The conversational
+  agent is the whole inbound path, so without this key the bot can only
+  acknowledge texts.
 
 Worker logs (Cloudflare dashboard → Workers → curtisclan → Logs) carry a
 `[sendblueWebhook]` line naming the reason for every single drop, and a
 `[inboundReply]` / `[queue] resolve_reply` line for everything after it.
+Each turn also logs one `[agent]` line per tool it ran (and what failed),
+which is the fastest way to see why the bot answered the way it did.
+Outbound asks log `[hourly_checkin]`.
 
 ### If you put the Worker behind Cloudflare Access
 
@@ -282,7 +327,8 @@ src/
   categorization/        Rules engine, merchant-memory matcher, confidence gate, cascade, Claude classifier
   plaid/                 Plaid REST client, webhook JWT verification, /transactions/sync orchestration
   sendblue/               Sendblue REST client + webhook payload types
-  messaging/              Household group chat, quiet hours, outbound send, inbound reply resolver + "fix X" corrections
+  messaging/              The conversational agent + its read/write tools, household group chat,
+                          quiet hours, the hourly ask, and the daily digest
   queue/                  The one queue() consumer, branching on which queue a batch came from
   routes/                 Hono route handlers, one file per resource, plus the two webhook routes
   index.ts                Worker entrypoint: fetch + queue + scheduled

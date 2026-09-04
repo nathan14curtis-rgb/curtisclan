@@ -37,6 +37,17 @@ export function getPageHead(view: string, ctx: PageHeadContext): PageHead {
         secondaryCta: "Add expense",
         primaryCta: "Close the month",
       };
+    case "Chat":
+      return {
+        sectionLabel: "Ask the bot",
+        title: "Ask the bot",
+        subtitle:
+          ctx.uncategorizedCount > 0
+            ? `Ask anything about the budget, or tell it what to change. ${ctx.uncategorizedCount} charge${ctx.uncategorizedCount === 1 ? "" : "s"} still need a category.`
+            : "Ask anything about the budget, or tell it what to change — same thread as your texts.",
+        secondaryCta: "",
+        primaryCta: "",
+      };
     case "Transactions":
       return {
         sectionLabel: "Transactions",

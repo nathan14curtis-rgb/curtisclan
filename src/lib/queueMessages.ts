@@ -14,5 +14,8 @@ export type TransactionQueueMessage =
   | { type: "resolve_reply"; householdId: string; userId: string; inboundMessageId: string };
 
 export type MessageQueueMessage =
-  | { type: "send_clarification"; householdId: string; clarificationId: string }
+  // The hourly batched ask about charges the cascade couldn't place
+  // (src/messaging/hourlyCheckin.ts) — one message per household per hour,
+  // not one per charge, and only ever about that hour's charges.
+  | { type: "hourly_checkin"; householdId: string }
   | { type: "daily_digest"; householdId: string };

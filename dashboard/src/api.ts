@@ -27,6 +27,14 @@ export type VerifyState = "me" | "ai" | "none";
 export type TransactionFlagColor = "red" | "orange" | "yellow" | "green" | "blue" | "purple";
 export type MaintenanceStatus = "scheduled" | "due_soon" | "overdue" | "done";
 
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  channel: "imessage" | "dashboard" | "scheduled";
+  createdAt: string;
+}
+
 export interface Household {
   id: string;
   name: string;
@@ -385,4 +393,13 @@ export const api = {
     householdId: string,
     input: { accountId: string; postedAt: string; amountCents: number; description: string; categoryId: string; memo?: string; createdByUserId?: string },
   ) => request<Transaction>(`/households/${householdId}/transactions`, { method: "POST", body: JSON.stringify(input) }),
+
+  // The same conversation the household has by text, from the dashboard —
+  // one thread, one agent (src/messaging/agent.ts).
+  getChat: (householdId: string) => request<{ messages: ChatMessage[] }>(`/households/${householdId}/chat`),
+  sendChat: (householdId: string, message: string, userId?: string | null) =>
+    request<{ reply: string; changed: boolean }>(`/households/${householdId}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ message, userId: userId ?? undefined }),
+    }),
 };

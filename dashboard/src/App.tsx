@@ -15,6 +15,7 @@ import {
 import { ASSET_SUMMARY_VIEW, Sidebar, assetIdFromView } from "./components/Sidebar";
 import { LoginPage } from "./components/LoginPage";
 import { OverviewPage } from "./components/OverviewPage";
+import { ChatPage } from "./components/ChatPage";
 import { TransactionsPage } from "./components/TransactionsPage";
 import { EnvelopesPage } from "./components/EnvelopesPage";
 import { GoalsPage } from "./components/GoalsPage";
@@ -296,6 +297,19 @@ export function App() {
             transactions={transactions}
             onGoToTransactions={() => changeView("Transactions")}
             onGoToEnvelopes={() => changeView("Envelopes")}
+          />
+        )}
+        {activeView === "Chat" && (
+          <ChatPage
+            householdId={household.id}
+            currentUserId={currentUserId}
+            // A turn can recategorize a charge or retarget an envelope —
+            // refresh the same data the other pages read so the change is
+            // visible without a reload.
+            onChanged={() => {
+              void refreshTransactions();
+              void refreshCategoriesAndEnvelopes();
+            }}
           />
         )}
         {activeView === "Transactions" && (

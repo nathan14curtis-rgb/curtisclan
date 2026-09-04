@@ -951,3 +951,55 @@ details summary {
   font-weight: 600;
   font-family: var(--font-mono);
 }
+
+/* Chat — the conversational bot in the dashboard (ChatPage.tsx). Same
+   thread as the household's texts, so it reads like one: right-aligned
+   bubbles for what someone said, left for the bot. */
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.chat-bubble {
+  max-width: 34rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-card);
+  white-space: pre-wrap;
+  line-height: 1.45;
+  color: var(--body-text);
+}
+.chat-bubble--user {
+  align-self: flex-end;
+  background: var(--surface-emphasis);
+  color: var(--ink);
+}
+.chat-bubble--assistant {
+  align-self: flex-start;
+  background: var(--hover);
+  border: 1px solid var(--border);
+}
+.chat-bubble--pending {
+  color: var(--muted);
+  font-style: italic;
+}
+.chat-channel {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--faint);
+}
+.chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 1rem;
+}
+.chat-composer {
+  display: flex;
+  gap: 8px;
+}
+.chat-composer input[type="text"] {
+  flex: 1;
+}

@@ -88,6 +88,18 @@ export async function listOpenClarificationsForHousehold(db: D1Database, househo
   return results;
 }
 
+/** Asks the pipeline has created but nobody has sent yet — what the hourly
+ * check-in (src/messaging/hourlyCheckin.ts) batches into one message.
+ * Oldest first, so a message that can't fit them all asks about the
+ * longest-waiting charges rather than an arbitrary subset. */
+export async function listQueuedClarificationsForHousehold(db: D1Database, householdId: string): Promise<Clarification[]> {
+  const { results } = await db
+    .prepare(`SELECT * FROM clarification WHERE household_id = ? AND status = 'queued' ORDER BY created_at`)
+    .bind(householdId)
+    .all<Clarification>();
+  return results;
+}
+
 export async function listQueuedClarifications(db: D1Database, status: ClarificationStatus = "queued"): Promise<Clarification[]> {
   const { results } = await db.prepare(`SELECT * FROM clarification WHERE status = ?`).bind(status).all<Clarification>();
   return results;

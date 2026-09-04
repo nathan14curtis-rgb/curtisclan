@@ -27,7 +27,7 @@ export async function createHousehold(
 
 /** Every household on this deployment — the loop the nightly-cron-style
  * morning digest runs over (src/messaging/dailyDigest.ts), same pattern as
- * enqueueNightlyReconciliation looping every active Plaid item. */
+ * enqueueHourlyPlaidSync looping every active Plaid item. */
 export async function listHouseholds(db: D1Database): Promise<Household[]> {
   const { results } = await db.prepare(`SELECT * FROM household`).all<Household>();
   return results;

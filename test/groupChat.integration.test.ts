@@ -4,10 +4,10 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { createHousehold, getHousehold } from "../src/db/households";
 import { createUser, verifyUserPhone } from "../src/db/users";
 import { createAccount } from "../src/db/accounts";
-import { applyCategorization, createTransaction, findRecentTransactionByMerchantSubstring, getTransaction } from "../src/db/transactions";
+import { applyCategorization, createTransaction, getTransaction } from "../src/db/transactions";
 import { listCategories } from "../src/db/categories";
 import { allocateToEnvelope, listEnvelopes } from "../src/db/envelopes";
-import { getLatestClarificationForTransaction } from "../src/db/clarifications";
+import { listRecentConversation } from "../src/db/conversations";
 import { sendToHouseholdGroup } from "../src/messaging/groupChat";
 import { processInboundReply } from "../src/messaging/inboundProcessing";
 
@@ -86,41 +86,25 @@ describe("sendToHouseholdGroup", () => {
   });
 });
 
-describe("processInboundReply — 'fix' command is household-scoped", () => {
-  it("lets anyone in the household — not just the account owner — trigger a correction", async () => {
-    const { household, wife, checking } = await seedHousehold();
-    const created = await createTransaction(db, household.id, {
-      accountId: checking.id, postedAt: "2026-03-10", amountCents: -4500, rawDescription: "WALMART", normalizedMerchant: "WALMART",
-    });
-    const groceries = (await listCategories(db, household.id)).find((c) => c.name === "Groceries")!;
-    await applyCategorization(db, household.id, created.id, { categoryId: groceries.id, method: "human" });
-    const txn = await findRecentTransactionByMerchantSubstring(db, household.id, "walmart");
+/** A stand-in for the Anthropic client that hands back one canned response
+ * per call, in order — the agent loop calls messages.create once per tool
+ * round, so a scripted conversation is a list of responses. */
+function scriptedClient(responses: unknown[]) {
+  const create = vi.fn();
+  for (const response of responses) create.mockResolvedValueOnce(response);
+  return { client: { messages: { create } } as unknown as Anthropic, create };
+}
 
-    // The wife sends "fix walmart" — she's not the account owner (Nathan
-    // is), but the household group model means anyone can request a
-    // correction on anything, not just their own card's charges.
-    await processInboundReply(env, household.id, wife.id, "fix walmart");
+function toolUse(name: string, input: unknown) {
+  return { content: [{ type: "tool_use", id: `tu_${name}`, name, input }], stop_reason: "tool_use" };
+}
 
-    const clarification = await getLatestClarificationForTransaction(db, household.id, txn!.id);
-    expect(clarification?.status).toBe("queued");
-    expect(clarification?.question_text).toContain("WALMART");
-    expect(clarification?.user_id).toBe(wife.id);
-  });
+function finalText(text: string) {
+  return { content: [{ type: "text", text }], stop_reason: "end_turn" };
+}
 
-  it("tells the household group when nothing matches, instead of failing silently", async () => {
-    const { household, nathan } = await seedHousehold();
-    const fetchMock = mockFetchOnce({ message_handle: "mh_none", group_id: "grp_new", status: "QUEUED", error_code: null });
-
-    await processInboundReply(env, household.id, nathan.id, "fix some place that never happened");
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body.content).toContain("some place that never happened");
-  });
-});
-
-describe("processInboundReply — natural-language correction without 'fix'", () => {
-  it("recategorizes a recently auto-categorized transaction and confirms with the envelope's remaining balance", async () => {
+describe("processInboundReply — the conversational agent", () => {
+  it("acts on a plain-English correction through its tools and texts back what it did", async () => {
     const { household, nathan, checking } = await seedHousehold();
     Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
 
@@ -130,160 +114,123 @@ describe("processInboundReply — natural-language correction without 'fix'", ()
     const misc = categories.find((c) => c.name === "Miscellaneous")!;
 
     const uber = await createTransaction(db, household.id, {
-      accountId: checking.id,
-      postedAt: `${month}-15`,
-      amountCents: -1200,
-      rawDescription: "UBER TRIP",
-      normalizedMerchant: "UBER",
+      accountId: checking.id, postedAt: `${month}-15`, amountCents: -1200, rawDescription: "UBER TRIP", normalizedMerchant: "UBER",
     });
-    // Simulates the cascade having already auto-filed it (method: 'llm'),
-    // same as what a daily digest would have reported that morning.
+    // Auto-filed by the cascade, exactly as the daily digest would have
+    // reported it that morning.
     await applyCategorization(db, household.id, uber.id, { categoryId: entertainment.id, method: "llm", confidence: 0.6 });
-
     const miscEnvelope = (await listEnvelopes(db, household.id)).find((e) => e.category_id === misc.id)!;
     await allocateToEnvelope(db, household.id, { envelopeId: miscEnvelope.id, month, amountCents: 10000 });
 
-    // Anthropic's own SDK isn't fetch-mocked anywhere in this codebase —
-    // resolveReply already takes an injectable client for exactly this
-    // reason (see test/replyResolver.test.ts); processInboundReply's
-    // optional anthropicClient param follows the same pattern.
-    const fakeClient = {
-      messages: {
-        create: vi.fn().mockResolvedValue({
-          content: [
-            {
-              type: "tool_use",
-              id: "tu_1",
-              name: "resolve_clarifications",
-              input: {
-                matches: [{ transaction_id: uber.id, category_id: misc.id, memo: "business trip", confidence: 0.9, source_span: "the uber was for business" }],
-                unmatched_transaction_ids: [],
-                unresolved_text: "",
-              },
-            },
-          ],
-        }),
-      },
-    } as unknown as Anthropic;
+    const { client, create } = scriptedClient([
+      toolUse("categorize_transactions", { items: [{ transaction_id: uber.id, category: "Miscellaneous", memo: "business trip" }] }),
+      finalText("Moved the $12.00 UBER to Miscellaneous — $88 left there this month."),
+    ]);
     const fetchMock = mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
 
-    // No "fix" prefix — this is exactly the digest reply UX: a plain
-    // correction referencing the merchant by name.
-    await processInboundReply(env, household.id, nathan.id, "actually, the uber was for business, not entertainment", fakeClient);
+    await processInboundReply(env, household.id, nathan.id, "actually, the uber was for business", client);
 
     const updated = await getTransaction(db, household.id, uber.id);
     expect(updated.category_id).toBe(misc.id);
     expect(updated.memo).toBe("business trip");
 
+    // The charge it corrected was in the situation block, so the model
+    // never had to go looking for it.
+    const firstCall = create.mock.calls[0]![0];
+    expect(JSON.stringify(firstCall.messages)).toContain(uber.id);
+
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body.content).toContain("Confirmed! $12.00 at UBER matched to Miscellaneous");
-    // $100 allocated - $12 spent = $88 left.
-    expect(body.content).toContain("$88 left this month");
+    expect(body.content).toBe("Moved the $12.00 UBER to Miscellaneous — $88 left there this month.");
   });
 
-  it("tries to answer conversationally when there's nothing open and nothing recently categorized to correct", async () => {
+  it("keeps both sides of the exchange, so the next text has the thread", async () => {
     const { household, nathan } = await seedHousehold();
-    Object.assign(env, { ANTHROPIC_API_KEY: undefined });
+    Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
+    const { client } = scriptedClient([finalText("You've spent $312 on groceries so far this month.")]);
+    mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
+
+    await processInboundReply(env, household.id, nathan.id, "how much on groceries this month?", client);
+
+    const thread = await listRecentConversation(db, household.id);
+    expect(thread.map((m) => [m.role, m.content])).toEqual([
+      ["user", "how much on groceries this month?"],
+      ["assistant", "You've spent $312 on groceries so far this month."],
+    ]);
+    expect(thread[0]!.user_id).toBe(nathan.id);
+  });
+
+  it("answers a question with no charges in play at all, instead of falling back to 'nothing to match'", async () => {
+    const { household, nathan } = await seedHousehold();
+    Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
+    const { client, create } = scriptedClient([
+      toolUse("get_spending_plan", {}),
+      finalText("Nothing's over yet this month — dining is the closest at $40 left."),
+    ]);
     const fetchMock = mockFetchOnce({ message_handle: "mh_qa", group_id: "grp_abc", status: "QUEUED", error_code: null });
 
-    await processInboundReply(env, household.id, nathan.id, "the uber was for business");
-    // No API key configured — falls back to the "not set up yet" text
-    // rather than silently doing nothing (Sendblue send is the one fetch).
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
+    await processInboundReply(env, household.id, nathan.id, "are we over on anything?", client);
 
-describe("processInboundReply — never silently drops a reply that had something to answer", () => {
-  it("texts back instead of doing nothing when ANTHROPIC_API_KEY isn't configured", async () => {
+    expect(create).toHaveBeenCalledTimes(2);
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.content).toContain("Nothing's over yet");
+  });
+
+  it("hands a bad tool argument back to the model to retry rather than dying on it", async () => {
     const { household, nathan, checking } = await seedHousehold();
-    // Explicit, not just relying on beforeEach never setting it — an
-    // earlier test in this file does set it, and env mutations persist
-    // across tests in the same file (that's exactly why beforeEach resets
-    // the Sendblue vars every time too). This is the exact
-    // misconfiguration that used to eat a reply with zero signal to the
-    // person who sent it (or to anyone reading logs).
-    Object.assign(env, { ANTHROPIC_API_KEY: undefined });
-    const month = new Date().toISOString().slice(0, 7);
+    Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
     const groceries = (await listCategories(db, household.id)).find((c) => c.name === "Groceries")!;
     const txn = await createTransaction(db, household.id, {
-      accountId: checking.id, postedAt: `${month}-10`, amountCents: -2200, rawDescription: "THE HIVE MERCANTILE",
+      accountId: checking.id, postedAt: "2026-03-10", amountCents: -2200, rawDescription: "THE HIVE MERCANTILE", normalizedMerchant: "THE HIVE MERCANTILE",
     });
-    await applyCategorization(db, household.id, txn.id, { categoryId: groceries.id, method: "llm", confidence: 0.5 });
+
+    const { client, create } = scriptedClient([
+      toolUse("categorize_transactions", { items: [{ transaction_id: txn.id, category: "Craft Supplies" }] }),
+      toolUse("categorize_transactions", { items: [{ transaction_id: txn.id, category: "Groceries" }] }),
+      finalText("Filed the $22.00 Hive Mercantile charge under Groceries."),
+    ]);
+    mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
+
+    await processInboundReply(env, household.id, nathan.id, "the hive one was craft supplies, or groceries I guess", client);
+
+    // The failed first attempt came back as an is_error tool_result naming
+    // the real categories — that's what makes the second attempt possible.
+    // (The loop appends to one messages array, so the recorded calls all
+    // point at its final state; look through the whole thing.)
+    const blocks = JSON.parse(JSON.stringify(create.mock.calls.at(-1)![0].messages)).flatMap((m: { content: unknown }) =>
+      Array.isArray(m.content) ? m.content : [],
+    );
+    const errors = blocks.filter((b: { type: string; is_error?: boolean }) => b.type === "tool_result" && b.is_error);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].content).toContain("No category named 'Craft Supplies'");
+
+    expect((await getTransaction(db, household.id, txn.id)).category_id).toBe(groceries.id);
+  });
+
+  it("texts back instead of doing nothing when ANTHROPIC_API_KEY isn't configured", async () => {
+    const { household, nathan } = await seedHousehold();
+    Object.assign(env, { ANTHROPIC_API_KEY: undefined });
     const fetchMock = mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
 
     await processInboundReply(env, household.id, nathan.id, "that was actually for the kids");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body.content).toContain("can't match it to a charge yet");
-    const unchanged = await getTransaction(db, household.id, txn.id);
-    expect(unchanged.category_id).toBe(groceries.id); // untouched — nothing to apply without Claude
+    expect(body.content).toContain("isn't set up");
   });
 
-  it("texts back instead of dying silently when resolveReply itself throws", async () => {
-    const { household, nathan, checking } = await seedHousehold();
+  it("texts back instead of dying silently when the model call itself throws", async () => {
+    const { household, nathan } = await seedHousehold();
     Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
-    const month = new Date().toISOString().slice(0, 7);
-    const groceries = (await listCategories(db, household.id)).find((c) => c.name === "Groceries")!;
-    const txn = await createTransaction(db, household.id, {
-      accountId: checking.id, postedAt: `${month}-10`, amountCents: -2200, rawDescription: "THE HIVE MERCANTILE",
-    });
-    await applyCategorization(db, household.id, txn.id, { categoryId: groceries.id, method: "llm", confidence: 0.5 });
-
     const failingClient = { messages: { create: vi.fn().mockRejectedValue(new Error("anthropic 529: overloaded")) } } as unknown as Anthropic;
     const fetchMock = mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
 
-    // Previously this exception propagated out to the queue consumer,
-    // which retries a few times and then drops the job — still nothing
-    // ever reaches the person who replied.
+    // This used to propagate to the queue consumer, which retries a few
+    // times and then drops the job — nothing ever reaches the person who
+    // texted in.
     await processInboundReply(env, household.id, nathan.id, "that was actually for the kids", failingClient);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.content).toContain("hit a hiccup");
-    const unchanged = await getTransaction(db, household.id, txn.id);
-    expect(unchanged.category_id).toBe(groceries.id);
-  });
-
-  it("texts back when Claude runs but resolves nothing confidently", async () => {
-    const { household, nathan, checking } = await seedHousehold();
-    Object.assign(env, { ANTHROPIC_API_KEY: "test-anthropic-key" });
-    const month = new Date().toISOString().slice(0, 7);
-    const groceries = (await listCategories(db, household.id)).find((c) => c.name === "Groceries")!;
-    const misc = (await listCategories(db, household.id)).find((c) => c.name === "Miscellaneous")!;
-    const txn = await createTransaction(db, household.id, {
-      accountId: checking.id, postedAt: `${month}-10`, amountCents: -2200, rawDescription: "THE HIVE MERCANTILE",
-    });
-    await applyCategorization(db, household.id, txn.id, { categoryId: groceries.id, method: "llm", confidence: 0.5 });
-
-    // A pairing Claude itself flagged as genuinely ambiguous — below
-    // MIN_MATCH_CONFIDENCE, so it must not silently apply either.
-    const fakeClient = {
-      messages: {
-        create: vi.fn().mockResolvedValue({
-          content: [
-            {
-              type: "tool_use",
-              id: "tu_1",
-              name: "resolve_clarifications",
-              input: {
-                matches: [{ transaction_id: txn.id, category_id: misc.id, memo: "not sure", confidence: 0.3, source_span: "hmm" }],
-                unmatched_transaction_ids: [],
-                unresolved_text: "",
-              },
-            },
-          ],
-        }),
-      },
-    } as unknown as Anthropic;
-    const fetchMock = mockFetchOnce({ message_handle: "mh_1", group_id: "grp_abc", status: "QUEUED", error_code: null });
-
-    await processInboundReply(env, household.id, nathan.id, "hmm not sure", fakeClient);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body.content).toContain("couldn't match it confidently");
-    const unchanged = await getTransaction(db, household.id, txn.id);
-    expect(unchanged.category_id).toBe(groceries.id); // below MIN_MATCH_CONFIDENCE — never applied
   });
 });

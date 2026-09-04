@@ -333,22 +333,34 @@ export async function listUncategorizedMerchantSummary(db: D1Database, household
   return results.map((r) => ({ merchant: r.merchant, count: r.count, avgAmountCents: Math.round(r.avg_amount_cents), kind: r.kind }));
 }
 
-/** Recently categorized transactions (auto or otherwise), most recent
- * first — feeds both the morning digest (src/messaging/dailyDigest.ts)
- * and the "reply without 'fix'" correction pool
- * (src/messaging/inboundProcessing.ts), which needs a candidate list to
- * match a free-text correction against even when nothing is still open. */
+/** Recently categorized transactions, most recent first — feeds both the
+ * daily digest (src/messaging/dailyDigest.ts) and the correction pool the
+ * conversational bot is handed every turn (src/messaging/agent.ts), which
+ * is what makes "actually that uber was for business" work with no
+ * command syntax at all.
+ *
+ * `autoOnly` narrows it to what the app decided by itself — the latest
+ * classification came from a rule, merchant memory, or the LLM, not a
+ * person. That's the set worth showing back: a charge someone already
+ * categorized by text or in the dashboard doesn't need reporting to the
+ * person who categorized it. Same correlated-subquery shape as
+ * listTransactionsWithVerifyState, and the same definition of "auto". */
 export async function listRecentlyCategorizedTransactions(
   db: D1Database,
   householdId: string,
   sinceIso: string,
-  limit = 25,
+  opts: { limit?: number; autoOnly?: boolean } = {},
 ): Promise<Transaction[]> {
+  const limit = Math.min(opts.limit ?? 25, 100);
+  const autoOnlyClause = opts.autoOnly
+    ? `AND (SELECT method FROM transaction_classification tc WHERE tc.transaction_id = "transaction".id ORDER BY tc.created_at DESC, tc.id DESC LIMIT 1) IN ('rule', 'memory', 'llm')`
+    : "";
   const { results } = await db
     .prepare(
       `SELECT * FROM "transaction"
          WHERE household_id = ? AND category_id IS NOT NULL AND is_transfer = 0 AND excluded_from_budget = 0
            AND updated_at >= ?
+           ${autoOnlyClause}
          ORDER BY updated_at DESC LIMIT ?`,
     )
     .bind(householdId, sinceIso, limit)
