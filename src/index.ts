@@ -18,15 +18,20 @@ import { documentsRoute } from "./routes/documents";
 import { maintenanceRoute } from "./routes/maintenance";
 import { recurringPatternsRoute } from "./routes/recurringPatterns";
 import { messagingDiagnosticsRoute } from "./routes/messagingDiagnostics";
+import { chatRoute } from "./routes/chat";
 import { plaidWebhookRoute } from "./routes/plaidWebhook";
 import { sendblueWebhookRoute } from "./routes/sendblueWebhook";
 import { handleQueueBatch } from "./queue/consumer";
 import { enqueueDailyDigest } from "./messaging/dailyDigest";
-import { enqueueNightlyReconciliation } from "./plaid/reconciliation";
+import { enqueueHourlyCheckin } from "./messaging/hourlyCheckin";
+import { enqueueHourlyPlaidSync } from "./plaid/reconciliation";
 import type { MessageQueueMessage, TransactionQueueMessage } from "./lib/queueMessages";
 
-// Must match the second entry in wrangler.jsonc's triggers.crons exactly.
+// Both must match wrangler.jsonc's triggers.crons exactly — ScheduledController
+// carries the cron expression and nothing else, so these strings are the
+// only way to tell the two schedules apart.
 const DAILY_DIGEST_CRON = "0 13 * * *";
+const HOURLY_SYNC_CRON = "0 * * * *";
 
 // strict: false so "/webhooks/sendblue/" matches the same route as
 // "/webhooks/sendblue". A trailing slash used to fall through to Hono's
@@ -70,6 +75,8 @@ scoped.route("/:householdId/documents", documentsRoute);
 scoped.route("/:householdId/maintenance", maintenanceRoute);
 scoped.route("/:householdId/recurring-patterns", recurringPatternsRoute);
 scoped.route("/:householdId/messaging", messagingDiagnosticsRoute);
+// The same conversational agent the iMessage loop uses, from the dashboard.
+scoped.route("/:householdId/chat", chatRoute);
 
 app.route("/api/households", scoped);
 
@@ -104,8 +111,18 @@ export default {
       console.log(`daily digest: enqueued for ${count} household(s)`);
       return;
     }
-    // Nightly reconciliation (PLAN §4.2: "webhooks... get dropped").
-    const count = await enqueueNightlyReconciliation(env);
-    console.log(`nightly reconciliation: enqueued sync for ${count} plaid item(s)`);
+    if (controller.cron !== HOURLY_SYNC_CRON) {
+      // A schedule in wrangler.jsonc that nothing here branches on — the
+      // two lists have drifted. Run the hourly cycle anyway (it's the
+      // idempotent one) rather than silently doing nothing, and say so.
+      console.warn(`scheduled: unrecognized cron "${controller.cron}" — running the hourly cycle; check wrangler.jsonc against src/index.ts`);
+    }
+    // The hourly cycle, in one place because the order matters: pull from
+    // Plaid first, then ask about whatever that pull couldn't categorize.
+    // The check-in job carries its own delay (hourlyCheckin.ts) so the
+    // sync jobs ahead of it have drained by the time it runs.
+    const items = await enqueueHourlyPlaidSync(env);
+    const households = await enqueueHourlyCheckin(env);
+    console.log(`hourly cycle: enqueued sync for ${items} plaid item(s) and a check-in for ${households} household(s)`);
   },
 } satisfies ExportedHandler<Env, TransactionQueueMessage | MessageQueueMessage>;

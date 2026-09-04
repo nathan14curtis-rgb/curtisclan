@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Asset, Household } from "../api";
 import { formatCents } from "../format";
 
-export const BUDGETING_VIEWS = ["Overview", "Transactions", "Envelopes", "Goals", "Members"] as const;
+export const BUDGETING_VIEWS = ["Overview", "Chat", "Transactions", "Envelopes", "Goals", "Members"] as const;
 // Internal view ids (above) stay the same — they're the persisted
 // localStorage value and App.tsx's routing key — only the label shown in
 // the nav changes per the rename: Envelopes -> Spending Plan. The former
@@ -10,6 +10,7 @@ export const BUDGETING_VIEWS = ["Overview", "Transactions", "Envelopes", "Goals"
 // and detector now live inside Spending Plan's Bills section.
 const BUDGETING_LABELS: Record<(typeof BUDGETING_VIEWS)[number], string> = {
   Overview: "Overview",
+  Chat: "Ask the bot",
   Transactions: "Transactions",
   Envelopes: "Spending Plan",
   Goals: "Goals",

@@ -214,6 +214,19 @@ export interface InboundMessage {
   raw_payload: string;
 }
 
+export type ConversationRole = "user" | "assistant";
+export type ConversationChannel = "imessage" | "dashboard" | "scheduled";
+
+export interface ConversationMessage {
+  id: string;
+  household_id: string;
+  user_id: string | null;
+  role: ConversationRole;
+  content: string;
+  channel: ConversationChannel;
+  created_at: string;
+}
+
 export interface MerchantMemory {
   id: string;
   household_id: string;

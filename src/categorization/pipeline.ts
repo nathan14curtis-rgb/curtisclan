@@ -1,5 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { MessageQueueMessage } from "../lib/queueMessages";
 import type { Env } from "../types";
 import { getAccount } from "../db/accounts";
 import { listCategories } from "../db/categories";
@@ -22,7 +21,9 @@ function buildLlmClassifier(env: Env): LlmClassifier {
  * — with the account name appended once questions go to a shared group
  * thread (src/messaging/groupChat.ts) rather than straight to the card
  * owner, since which card a charge landed on is no longer implicit from
- * who the text arrived at.
+ * who the text arrived at. Stored on the clarification for the dashboard
+ * and the audit trail; the hourly check-in composes its own combined text
+ * from the same underlying charges.
  */
 function buildQuestionText(amountCents: number, merchant: string | null, rawDescription: string, accountName: string): string {
   const dollars = (Math.abs(amountCents) / 100).toFixed(2);
@@ -127,17 +128,10 @@ export async function categorizeTransaction(
   }
 
   const alreadyOpen = await getLatestClarificationForTransaction(env.DB, householdId, transactionId);
-  if (alreadyOpen && alreadyOpen.status === "sent") {
-    console.log(`[categorize] ${transactionId} clarification already sent — skipping`);
-    return;
-  }
-  if (alreadyOpen && alreadyOpen.status === "queued") {
-    // Still "queued" means its send_clarification job never actually got
-    // through (dropped after exhausting the queue's retries, most likely)
-    // — re-enqueue rather than leaving it stuck forever.
-    console.log(`[categorize] ${transactionId} clarification ${alreadyOpen.id} still queued — re-sending`);
-    const message: MessageQueueMessage = { type: "send_clarification", householdId, clarificationId: alreadyOpen.id };
-    await env.MESSAGE_QUEUE.send(message);
+  if (alreadyOpen && (alreadyOpen.status === "sent" || alreadyOpen.status === "queued")) {
+    // Already asked, or already waiting for this hour's ask to go out —
+    // either way a redelivered categorize job must not queue a second one.
+    console.log(`[categorize] ${transactionId} clarification ${alreadyOpen.id} already ${alreadyOpen.status} — skipping`);
     return;
   }
 
@@ -152,8 +146,9 @@ export async function categorizeTransaction(
     userId: askee.id,
     questionText: buildQuestionText(transaction.amount_cents, transaction.normalized_merchant, transaction.raw_description, account.name),
   });
-  console.log(`[categorize] ${transactionId} created clarification ${clarification.id}, asking user ${askee.id}`);
-
-  const message: MessageQueueMessage = { type: "send_clarification", householdId, clarificationId: clarification.id };
-  await env.MESSAGE_QUEUE.send(message);
+  // Left queued on purpose: nothing is sent from here any more. The hourly
+  // check-in (src/messaging/hourlyCheckin.ts) collects every ask raised
+  // since it last ran and sends one message for all of them, so a busy
+  // hour is one text instead of six.
+  console.log(`[categorize] ${transactionId} queued clarification ${clarification.id} for the next hourly check-in`);
 }

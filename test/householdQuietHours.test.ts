@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { householdQuietDelaySeconds } from "../src/messaging/sendClarification";
+import { householdQuietDelaySeconds } from "../src/messaging/quietHours";
 import type { User } from "../src/types";
 
 function makeUser(overrides: Partial<User> = {}): User {

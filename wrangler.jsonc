@@ -34,13 +34,18 @@
   },
 
   // Two schedules, branched on in src/index.ts's scheduled() via
-  // controller.cron (must match DAILY_DIGEST_CRON there exactly):
-  //   0 9 * * *  — nightly reconciliation (PLAN §4.2, §12 Phase 1),
-  //                09:00 UTC ≈ 2-3am Mountain depending on DST.
-  //   0 13 * * * — morning digest, 13:00 UTC ≈ 6-7am Mountain depending
-  //                on DST; adjust both to taste.
+  // controller.cron (must match HOURLY_SYNC_CRON / DAILY_DIGEST_CRON
+  // there exactly):
+  //   0 * * * *  — the hourly cycle: /transactions/sync for every active
+  //                Plaid item, then one batched text about whatever that
+  //                hour brought in and couldn't categorize
+  //                (src/messaging/hourlyCheckin.ts). Also what makes a
+  //                dropped Plaid webhook cost an hour instead of a day
+  //                (PLAN §4.2: "they get dropped").
+  //   0 13 * * * — morning digest of the last 24 hours of automatic
+  //                filings, 13:00 UTC ≈ 6-7am Mountain depending on DST.
   "triggers": {
-    "crons": ["0 9 * * *", "0 13 * * *"]
+    "crons": ["0 * * * *", "0 13 * * *"]
   },
 
   "vars": {

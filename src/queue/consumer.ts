@@ -3,7 +3,7 @@ import { getInboundMessage, markInboundMessageProcessed } from "../db/inboundMes
 import { describeError } from "../lib/errors";
 import { sendDailyDigest } from "../messaging/dailyDigest";
 import { processInboundReply } from "../messaging/inboundProcessing";
-import { processSendClarification } from "../messaging/sendClarification";
+import { sendHourlyCheckin } from "../messaging/hourlyCheckin";
 import { sendToHouseholdGroup } from "../messaging/groupChat";
 import { handleItemWebhook, syncPlaidItem } from "../plaid/sync";
 import type { MessageQueueMessage, TransactionQueueMessage } from "../lib/queueMessages";
@@ -78,8 +78,8 @@ async function handleTransactionQueueMessage(msg: TransactionQueueMessage, env: 
 async function handleMessageQueueMessage(msg: MessageQueueMessage, env: Env): Promise<void> {
   console.log(`[queue] message: ${msg.type}`, msg);
   switch (msg.type) {
-    case "send_clarification":
-      await processSendClarification(env, msg.householdId, msg.clarificationId, async (delaySeconds) => {
+    case "hourly_checkin":
+      await sendHourlyCheckin(env, msg.householdId, async (delaySeconds) => {
         await env.MESSAGE_QUEUE.send(msg, { delaySeconds });
       });
       return;
